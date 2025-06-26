@@ -1,6 +1,12 @@
+
 # Openlist 文件管理插件
 
 这是一个用于 AstrBot 的 Openlist 文件管理插件，让您可以通过聊天界面方便地管理 Openlist 服务器上的文件。
+
+本插件源代码基于 [linjianyan0229/astrbot_plugin_alistfile](https://github.com/linjianyan0229/astrbot_plugin_alistfile) 进行二次开发，在此向原作者表示衷心感谢！
+
+**请注意：** 本插件主要为自用目的修改，代码中预设了特定的文件路径（如 OpenList 下载文件的根目录）。若非自用，请根据您的实际Openlist服务器文件结构进行相应调整。
+
 
 ## ✨ 主要功能
 
