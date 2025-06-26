@@ -1,0 +1,81 @@
+{
+    "global_settings": {
+        "description": "全局设置",
+        "type": "object",
+        "items": {
+            "default_openlist_url": {
+                "description": "默认Openlist服务器地址",
+                "type": "string",
+                "default": "",
+                "placeholder": "http://localhost:5244"
+            },
+            "default_username": {
+                "description": "默认用户名",
+                "type": "string",
+                "default": "",
+                "placeholder": "留空表示匿名访问"
+            },
+            "default_password": {
+                "description": "默认密码",
+                "type": "string",
+                "default": "",
+                "placeholder": "用户名为空时可忽略"
+            },
+            "default_token": {
+                "description": "默认访问Token",
+                "type": "string",
+                "default": "",
+                "placeholder": "可选，优先级高于用户名密码"
+            },
+            "max_display_files": {
+                "description": "最大显示文件数",
+                "type": "int",
+                "default": 20,
+                "minimum": 1,
+                "maximum": 100
+            },
+            "allowed_extensions": {
+                "description": "允许的文件扩展名",
+                "type": "text",
+                "default": ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
+                "placeholder": "用逗号分隔，如: .txt,.pdf,.jpg"
+            },
+            "enable_preview": {
+                "description": "启用文件预览",
+                "type": "bool",
+                "default": true
+            },
+            "enable_cache": {
+                "description": "启用文件列表缓存",
+                "type": "bool",
+                "default": true
+            },
+            "cache_duration": {
+                "description": "缓存有效期(秒)",
+                "type": "int",
+                "default": 300,
+                "minimum": 60,
+                "maximum": 3600
+            },
+            "max_download_size": {
+                "description": "最大下载文件大小(MB)",
+                "type": "int",
+                "default": 50,
+                "minimum": 1,
+                "maximum": 500
+            },
+            "max_upload_size": {
+                "description": "最大上传文件大小(MB)",
+                "type": "int",
+                "default": 100,
+                "minimum": 1,
+                "maximum": 1000
+            },
+            "require_user_auth": {
+                "description": "要求用户认证(启用后每个用户需要独立配置)",
+                "type": "bool",
+                "default": true
+            }
+        }
+    }
+} 
