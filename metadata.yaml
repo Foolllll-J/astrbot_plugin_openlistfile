@@ -1,5 +1,5 @@
 name: astrbot_plugin_openlist # 插件唯一识别名
 desc: Openlist文件管理插件，支持浏览、搜索、下载Openlist服务器文件 # 插件简短描述
-version: v1.0.0 # 插件版本号
+version: v1.0.2 # 插件版本号
 author: Foolllll # 作者
 repo: https://github.com/AstrBotDevs/astrbot_plugin_openlist # 插件仓库地址
