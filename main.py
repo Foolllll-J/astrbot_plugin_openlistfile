@@ -1408,7 +1408,7 @@ class OpenlistPlugin(Star):
         user_config = self.get_user_config(user_id)
         is_user_auth_mode = self.get_webui_config("require_user_auth", True)
         
-        help_text = f"""📚 Openlist 文件管理插件 v1.0.1 帮助
+        help_text = f"""📚 Openlist 文件管理插件 v1.0.2 帮助
 
 ---
 **核心导航指令**
