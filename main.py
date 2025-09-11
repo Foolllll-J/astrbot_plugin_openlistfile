@@ -612,6 +612,7 @@ class OpenlistPlugin(Star):
                 user_config["password"] = default_password
             if not user_config.get("token") and default_token:
                 user_config["token"] = default_token
+            user_config["fixed_base_directory"] = fixed_base_directory
             user_config["max_display_files"] = max_display_files
             user_config["allowed_extensions"] = (
                 allowed_extensions.split(",")
@@ -627,6 +628,7 @@ class OpenlistPlugin(Star):
                 "username": default_username,
                 "password": default_password,
                 "token": default_token,
+                "fixed_base_directory": fixed_base_directory,
                 "max_display_files": max_display_files,
                 "allowed_extensions": allowed_extensions.split(",")
                 if isinstance(allowed_extensions, str)
