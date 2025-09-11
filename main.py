@@ -31,12 +31,13 @@ class OpenlistClient:
     """Openlist API 客户端"""
 
     def __init__(
-        self, base_url: str, username: str = "", password: str = "", token: str = ""
+        self, base_url: str, username: str = "", password: str = "", token: str = "",fixed_base_directory: str = ""
     ):
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
         self.token = token
+        self.fixed_base_directory = fixed_base_directory
         self.session = None
 
     async def __aenter__(self):
@@ -197,10 +198,11 @@ class OpenlistClient:
         if file_info and not file_info.get("is_dir", True):
 
             sign = file_info.get("sign")
-
-            FIXED_BASE_DIRECTORY = "/ilanzou/青萍"
-
-            full_path = f"{FIXED_BASE_DIRECTORY.rstrip('/')}/{path.lstrip('/')}"
+            
+            if self.fixed_base_directory:
+                full_path = f"{self.fixed_base_directory.rstrip('/')}/{path.lstrip('/')}"
+            else:
+                full_path = path
 
             encoded_url_path = quote(full_path.encode("utf-8"))
 
@@ -591,6 +593,7 @@ class OpenlistPlugin(Star):
         default_username = self.get_webui_config("default_username", "")
         default_password = self.get_webui_config("default_password", "")
         default_token = self.get_webui_config("default_token", "")
+        fixed_base_directory = self.get_webui_config("fixed_base_directory", "")
         max_display_files = self.get_webui_config("max_display_files", 20)
         allowed_extensions = self.get_webui_config(
             "allowed_extensions",
@@ -850,7 +853,7 @@ class OpenlistPlugin(Star):
                 if current_path.endswith("/"): file_path = f"{current_path}{file_name}"
                 else: file_path = f"{current_path}/{file_name}"
 
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 download_url = await client.get_download_url(file_path)
                 if not download_url:
                     yield event.plain_result("❌ 无法获取下载链接")
@@ -906,7 +909,7 @@ class OpenlistPlugin(Star):
         parent_path = item.get("parent", nav_state.get("current_path", "/"))
         file_path = f"{parent_path.rstrip('/')}/{file_name}"
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 download_url = await client.get_download_url(file_path)
                 if download_url:
                     name = item.get("name", "")
@@ -942,7 +945,7 @@ class OpenlistPlugin(Star):
                 yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
                 return
             yield event.plain_result(f"📤 开始上传: {file_name}\n💾 大小: {self._format_file_size(file_size)}\n📂 目标: {target_path}")
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 success = await client.upload_file(file_path, target_path, file_name)
                 if success:
                     yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
@@ -984,7 +987,7 @@ class OpenlistPlugin(Star):
                 yield event.plain_result(f"❌ 图片过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
                 return
             yield event.plain_result(f"📤 开始上传图片: {filename}\n💾 大小: {self._format_file_size(file_size)}\n📂 目标: {target_path}")
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 success = await client.upload_file(image_path, target_path, filename)
                 if success:
                     yield event.plain_result(f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
@@ -1083,7 +1086,7 @@ class OpenlistPlugin(Star):
                 yield event.plain_result("❌ 请先配置Openlist URL\n💡 使用 /ol config setup 开始配置向导")
                 return
             try:
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+                async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                     files = await client.list_files("/")
                     if files is not None:
                         yield event.plain_result("✅ Openlist连接测试成功!")
@@ -1123,7 +1126,7 @@ class OpenlistPlugin(Star):
                 yield event.plain_result(f"❌ 序号 {number} 无效，请使用 /ol ls 查看当前目录")
                 return
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 file_info = await client.get_file_info(target_path)
                 if file_info and not file_info.get("is_dir", False):
                     async for result in self._get_and_send_download_link(event, file_info, user_config):
@@ -1189,7 +1192,7 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 files = await client.search_files(keyword, path)
                 if files:
                     max_files = user_config.get("max_display_files", 20)
@@ -1225,7 +1228,7 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 file_info = await client.get_file_info(path)
                 if file_info:
                     name = file_info.get("name", "")
@@ -1278,7 +1281,7 @@ class OpenlistPlugin(Star):
                 return
         else:
             try:
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+                async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                     file_info = await client.get_file_info(path)
                     if file_info and not file_info.get("is_dir", False):
                         item_to_download = file_info
@@ -1309,7 +1312,7 @@ class OpenlistPlugin(Star):
             return
         previous_path = nav_state["parent_paths"].pop()
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", "")) as client:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 result = await client.list_files(previous_path)
                 if result is not None:
                     files = result.get("content", [])
