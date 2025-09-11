@@ -27,6 +27,12 @@
                 "default": "",
                 "placeholder": "可选，优先级高于用户名密码"
             },
+            "fixed_base_directory": {
+                "description": "下载链接前缀路径 (可选)",
+                "type": "string",
+                "default": "",
+                "placeholder": "例如: /夸克 (留空则不添加前缀)"
+            },
             "max_display_files": {
                 "description": "最大显示文件数",
                 "type": "int",
