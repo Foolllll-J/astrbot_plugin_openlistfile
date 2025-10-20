@@ -920,7 +920,7 @@ class OpenlistPlugin(Star):
                     result_text += f"📄 文件: {name}\n"
                     result_text += f"💾 大小: {self._format_file_size(size)}\n"
                     result_text += f"🔗 链接: {download_url}\n\n"
-                    result_text += "💡 提示: 点击链接即可下载文件"
+                    result_text += "💡 提示: 请复制链接并在浏览器中打开以下载文件。"
                     yield event.plain_result(result_text)
                 else:
                     yield event.plain_result(f"❌ 无法获取下载链接，文件可能不存在或为目录: {file_path}")
