@@ -929,16 +929,35 @@ class OpenlistPlugin(Star):
             yield event.plain_result(f"❌ 操作失败: {str(e)}")
 
     async def _upload_file(self, event: AstrMessageEvent, file_component: File, user_config: Dict):
-        """上传文件到Openlist"""
         user_id = event.get_sender_id()
         upload_state = self._get_user_upload_state(user_id)
         target_path = upload_state["target_path"]
+
+        # --- STRICT FILENAME EXTRACTION ---
+        file_name = None
+        raw_event_data = event.message_obj.raw_message
+        message_list = raw_event_data.get("message")
+        if isinstance(message_list, list):
+            for segment_dict in message_list:
+                if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
+                    data_dict = segment_dict.get("data", {})
+                    file_name = data_dict.get("file")
+                    if file_name: # Found a non-empty name, break
+                        break
+
+        # If filename could not be extracted, abort the upload.
+        if not file_name:
+            yield event.plain_result("出现异常，请稍后尝试上传")
+            logger.warning(f"用户 {user_id} 上传文件失败：无法从原始消息中解析出有效的文件名。")
+            return
+        # --- END FILENAME EXTRACTION ---
+
         try:
-            file_name = file_component.name
             file_path = await file_component.get_file()
             if not file_path or not os.path.exists(file_path):
                 yield event.plain_result("❌ 无法获取文件，请重新发送")
                 return
+
             file_size = os.path.getsize(file_path)
             max_upload_size_mb = self.get_webui_config("max_upload_size", 100)
             max_upload_size = max_upload_size_mb * 1024 * 1024
@@ -946,6 +965,7 @@ class OpenlistPlugin(Star):
                 size_mb = file_size / (1024 * 1024)
                 yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
                 return
+
             yield event.plain_result(f"📤 开始上传: {file_name}\n💾 大小: {self._format_file_size(file_size)}\n📂 目标: {target_path}")
             async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 success = await client.upload_file(file_path, target_path, file_name)
