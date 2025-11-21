@@ -144,7 +144,7 @@ class OpenlistClient:
             logger.error(f"获取文件信息失败: {e}")
             return None
 
-    async def search_files(self, keyword: str, path: str = "/") -> Optional[List[Dict]]:
+    async def search_files(self, keyword: str, path: str = "/", per_page: int = 1000) -> Optional[List[Dict]]:
         """搜索文件
         
         在指定路径下搜索包含关键词的文件
@@ -152,6 +152,7 @@ class OpenlistClient:
         Args:
             keyword: 搜索关键词
             path: 搜索范围路径，默认为根目录
+            per_page: 每页项目数，默认为1000
         
         Returns:
             Optional[List[Dict]]: 成功返回搜索结果列表，失败返回空列表
@@ -166,19 +167,26 @@ class OpenlistClient:
                 "keywords": keyword,
                 "scope": 0,  # 0: 当前目录及子目录
                 "page": 1,
-                "per_page": 100,
+                "per_page": per_page,
             }
+            logger.info(f"Openlist search_files request data: {search_data}")
 
             async with self.session.post(
                 f"{self.base_url}/api/fs/search", json=search_data, headers=headers
             ) as resp:
+                logger.info(f"Openlist search_files response status: {resp.status}")
                 if resp.status == 200:
                     result = await resp.json()
+                    logger.info(f"Openlist search_files raw response: {result}")
                     if result.get("code") == 200:
-                        return result.get("data", {}).get("content", [])
+                        content = result.get("data", {}).get("content")
+                        return content if content is not None else []
+                else:
+                    error_text = await resp.text()
+                    logger.info(f"Openlist search_files error response text: {error_text}")
                 return []
         except Exception as e:
-            logger.error(f"搜索文件失败: {e}")
+            logger.error(f"搜索文件失败: {e}", exc_info=True)
             return []
 
     async def get_download_url(self, path: str) -> Optional[str]:
@@ -766,20 +774,24 @@ class OpenlistPlugin(Star):
         else: return f"{size / (1024 * 1024 * 1024):.1f}GB"
 
     def _format_file_list(self, files: List[Dict], current_path: str, user_config: Dict, user_id: str = None) -> str:
-        """格式化文件列表
+        """格式化文件列表或搜索结果
         
-        将文件列表格式化为可读的文本消息，支持分页显示
+        将文件列表或搜索结果格式化为可读的文本消息，支持分页显示
         
         Args:
             files: 文件列表数据
-            current_path: 当前路径
+            current_path: 当前路径或搜索标题 (用于区分普通目录列表和搜索结果列表)
             user_config: 用户配置
             user_id: 用户ID（用于获取导航状态）
         
         Returns:
             str: 格式化后的文件列表消息
         """
-        if not files: return f"📁 {current_path}\n\n❌ 目录为空"
+        is_search_result = current_path.startswith("🔍 搜索") # Check for search title prefix
+        title = f"📁 {current_path}" if not is_search_result else current_path
+        
+        if not files: return f"{title}\n\n❌ 列表为空"
+
         nav_state = self._get_user_navigation_state(user_id)
         current_page = nav_state.get("current_page", 1)
         max_files_per_page = user_config.get("max_display_files", 20)
@@ -788,18 +800,24 @@ class OpenlistPlugin(Star):
         start_index = (current_page - 1) * max_files_per_page
         end_index = start_index + max_files_per_page
         items_to_display = files[start_index:end_index]
-        result = f"📁 {current_path}\n\n"
-        dirs = [f for f in files if f.get("is_dir", False)]
-        files_only = [f for f in files if not f.get("is_dir", False)]
+        
+        result = f"{title}\n\n"
+
+        # These are only relevant for non-search results
+        dirs_count = 0
+        files_only_count = 0
+        if not is_search_result:
+            dirs_count = len([f for f in files if f.get("is_dir", False)])
+            files_only_count = total_items - dirs_count # Correct calculation for files_only_count
+
         for i, item in enumerate(items_to_display, start=start_index + 1):
             name = item.get("name", "")
             size = item.get("size", 0)
             modified = item.get("modified", "")
             is_dir = item.get("is_dir", False)
-            if modified: modified = modified.split("T")[0]
-            if is_dir:
-                result += f"{i:2d}. 📂 {name}/\n"
-                if modified: result += f"      📅 {modified}\n"
+            
+            # Determine icon
+            if is_dir: icon = "📂"
             else:
                 ext = os.path.splitext(name)[1].lower()
                 if ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp"]: icon = "🖼️"
@@ -809,18 +827,50 @@ class OpenlistPlugin(Star):
                 elif ext in [".doc", ".docx"]: icon = "📝"
                 elif ext in [".zip", ".rar", ".7z"]: icon = "📦"
                 else: icon = "📄"
-                result += f"{i:2d}. {icon} {name}\n"
-                result += f"      💾 {self._format_file_size(size)}"
-                if modified: result += f" | 📅 {modified}"
-                result += "\n"
+            
+            result += f"{i:2d}. {icon} {name}{'/' if is_dir else ''}\n"
+
+            # Add extra info line
+            extra_info = []
+            if is_search_result:
+                parent = item.get("parent", "")
+                if parent:
+                    fixed_base_dir = user_config.get("fixed_base_directory", "")
+                    if fixed_base_dir and parent.startswith(fixed_base_dir):
+                        parent = parent[len(fixed_base_dir):]
+                        if not parent: parent = "/"
+                        elif not parent.startswith("/"): parent = "/" + parent
+                    extra_info.append(f"📍 {parent}")
+                # For search results, only show size for files, or for directories if size > 0
+                if not is_dir or size > 0:
+                    extra_info.append(f"💾 {self._format_file_size(size)}")
+            else: # Normal directory listing
+                # Only show size if it's a file, or if it's a directory and size > 0
+                if not is_dir or size > 0:
+                    extra_info.append(f"💾 {self._format_file_size(size)}")
+                
+                modified_date_part = modified.split('T')[0] if modified else ''
+                if modified_date_part: # Only append date if it's not empty
+                    extra_info.append(f"📅 {modified_date_part}")
+            
+            if extra_info:
+                result += f"      {' | '.join(extra_info)}\n"
+        
         result += f"\n📄 第 {current_page} / {total_pages} 页"
-        result += f" | 📊 总计: {len(dirs)} 个目录, {len(files_only)} 个文件"
+        if is_search_result:
+            result += f" | 📊 总计: {total_items} 个结果"
+        else:
+            dirs_count = len([f for f in files if f.get("is_dir", False)])
+            files_only_count = total_items - dirs_count # Correct calculation for files_only_count
+            result += f" | 📊 总计: {dirs_count} 个文件夹, {files_only_count} 个文件"
+
         result += f"\n\n💡 快速导航:"
         result += f"\n   • /ol ls <序号> - 进入目录/获取链接"
-        result += f"\n   • /ol quit - 返回上级目录"
+        if not is_search_result: # Only show quit for directory navigation
+             result += f"\n   • /ol quit - 返回上级目录"
         if total_pages > 1:
-            if current_page > 1: result += f"\n   • /ol page prev - ⬅️ 上一页"
-            if current_page < total_pages: result += f"\n   • /ol page next - ➡️ 下一页"
+            result += f"\n   • /ol page prev - ⬅️ 上一页"
+            result += f"\n   • /ol page next - ➡️ 下一页"
         return result
 
     async def _download_file(self, event: AstrMessageEvent, file_item: Dict, user_config: Dict, full_path_override: str = None):
@@ -852,7 +902,12 @@ class OpenlistPlugin(Star):
             else:
                 parent_path = file_item.get("parent")
                 if parent_path:
-                     file_path = f"{parent_path.rstrip('/')}/{file_name}"
+                    fixed_base_dir = user_config.get("fixed_base_directory", "")
+                    if fixed_base_dir and parent_path.startswith(fixed_base_dir):
+                        parent_path = parent_path[len(fixed_base_dir):]
+                        if not parent_path: parent_path = "/"
+                        elif not parent_path.startswith("/"): parent_path = "/" + parent_path
+                    file_path = f"{parent_path.rstrip('/')}/{file_name}"
                 else:
                     nav_state = self._get_user_navigation_state(user_id)
                     current_path = nav_state["current_path"]
@@ -919,6 +974,13 @@ class OpenlistPlugin(Star):
             nav_state = self._get_user_navigation_state(user_id)
             file_name = item.get("name", "")
             parent_path = item.get("parent", nav_state.get("current_path", "/"))
+            
+            fixed_base_dir = user_config.get("fixed_base_directory", "")
+            if item.get("parent") and fixed_base_dir and parent_path.startswith(fixed_base_dir):
+                parent_path = parent_path[len(fixed_base_dir):]
+                if not parent_path: parent_path = "/"
+                elif not parent_path.startswith("/"): parent_path = "/" + parent_path
+            
             file_path = f"{parent_path.rstrip('/')}/{file_name}"
             
         try:
@@ -1225,28 +1287,21 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
         try:
+            yield event.plain_result(f'🔍 正在搜索 "{keyword}"...')
             async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 files = await client.search_files(keyword, path)
                 if files:
-                    max_files = user_config.get("max_display_files", 20)
-                    result = f"🔍 搜索结果 (关键词: {keyword})\n搜索路径: {path}\n\n"
-                    for i, file_item in enumerate(files[:max_files], 1):
-                        name = file_item.get("name", "")
-                        parent = file_item.get("parent", "")
-                        size = file_item.get("size", 0)
-                        is_dir = file_item.get("is_dir", False)
-                        icon = "📂" if is_dir else "📄"
-                        result += f"{i}. {icon} {name}\n"
-                        result += f"   📍 {parent}\n"
-                        if not is_dir: result += f"   💾 {self._format_file_size(size)}\n"
-                        result += "\n"
-                    if len(files) > max_files:
-                        result += f"... 还有 {len(files) - max_files} 个结果未显示"
-                    yield event.plain_result(result)
+                    # 将搜索结果存入导航状态，以便复用翻页逻辑
+                    search_title = f'🔍 搜索 "{keyword}"' # Use a distinct title for search results
+                    self._update_user_navigation_state(user_id, search_title, files)
+                    
+                    # 使用通用的列表格式化函数显示第一页
+                    formatted_list = self._format_file_list(files, search_title, user_config, user_id)
+                    yield event.plain_result(formatted_list)
                 else:
                     yield event.plain_result(f"🔍 未找到包含 '{keyword}' 的文件")
         except Exception as e:
-            logger.error(f"用户 {user_id} 搜索文件失败: {e}")
+            logger.error(f"用户 {user_id} 搜索文件失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 搜索失败: {str(e)}")
 
     @openlist_group.command("info")
