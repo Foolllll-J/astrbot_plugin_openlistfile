@@ -823,7 +823,7 @@ class OpenlistPlugin(Star):
             if current_page < total_pages: result += f"\n   • /ol page next - ➡️ 下一页"
         return result
 
-    async def _download_file(self, event: AstrMessageEvent, file_item: Dict, user_config: Dict):
+    async def _download_file(self, event: AstrMessageEvent, file_item: Dict, user_config: Dict, full_path_override: str = None):
         """下载文件并作为附件发送给用户
         
         下载Openlist文件并通过消息发送给用户，支持大小限制
@@ -832,6 +832,7 @@ class OpenlistPlugin(Star):
             event: 消息事件
             file_item: 文件信息字典
             user_config: 用户配置
+            full_path_override (str, optional): 覆盖文件路径，如果提供则优先使用. Defaults to None.
         
         Yields:
             MessageEventResult: 消息事件结果
@@ -846,14 +847,17 @@ class OpenlistPlugin(Star):
             yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_download_size_mb}MB\n💡 请使用 /ol ls 获取下载链接")
             return
         try:
-            parent_path = file_item.get("parent")
-            if parent_path:
-                 file_path = f"{parent_path.rstrip('/')}/{file_name}"
+            if full_path_override:
+                file_path = full_path_override
             else:
-                nav_state = self._get_user_navigation_state(user_id)
-                current_path = nav_state["current_path"]
-                if current_path.endswith("/"): file_path = f"{current_path}{file_name}"
-                else: file_path = f"{current_path}/{file_name}"
+                parent_path = file_item.get("parent")
+                if parent_path:
+                     file_path = f"{parent_path.rstrip('/')}/{file_name}"
+                else:
+                    nav_state = self._get_user_navigation_state(user_id)
+                    current_path = nav_state["current_path"]
+                    if current_path.endswith("/"): file_path = f"{current_path}{file_name}"
+                    else: file_path = f"{current_path}/{file_name}"
 
             async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 download_url = await client.get_download_url(file_path)
@@ -891,7 +895,7 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 下载文件失败: {e}")
             yield event.plain_result(f"❌ 下载失败: {str(e)}")
 
-    async def _get_and_send_download_link(self, event: AstrMessageEvent, item: Dict, user_config: Dict):
+    async def _get_and_send_download_link(self, event: AstrMessageEvent, item: Dict, user_config: Dict, full_path: str = None):
         """获取指定项目的文件链接并发送
         
         生成文件下载链接并通过消息发送给用户
@@ -900,16 +904,23 @@ class OpenlistPlugin(Star):
             event: 消息事件
             item: 文件或目录信息字典
             user_config: 用户配置
+            full_path (str, optional): 文件的完整路径，如果提供，则优先使用. Defaults to None.
         
         Yields:
             MessageEventResult: 消息事件结果
         """
         user_id = event.get_sender_id()
         yield event.plain_result(f"🔗 正在获取文件链接: {item.get('name', '')}...")
-        nav_state = self._get_user_navigation_state(user_id)
-        file_name = item.get("name", "")
-        parent_path = item.get("parent", nav_state.get("current_path", "/"))
-        file_path = f"{parent_path.rstrip('/')}/{file_name}"
+        
+        # 如果提供了 full_path，则直接使用；否则，根据 item 信息构建路径
+        if full_path:
+            file_path = full_path
+        else:
+            nav_state = self._get_user_navigation_state(user_id)
+            file_name = item.get("name", "")
+            parent_path = item.get("parent", nav_state.get("current_path", "/"))
+            file_path = f"{parent_path.rstrip('/')}/{file_name}"
+            
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 download_url = await client.get_download_url(file_path)
@@ -1151,7 +1162,7 @@ class OpenlistPlugin(Star):
             async with OpenlistClient(user_config["openlist_url"], user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 file_info = await client.get_file_info(target_path)
                 if file_info and not file_info.get("is_dir", False):
-                    async for result in self._get_and_send_download_link(event, file_info, user_config):
+                    async for result in self._get_and_send_download_link(event, file_info, user_config, full_path=target_path):
                         yield result
                     return
                 list_result = await client.list_files(target_path, per_page=0)
@@ -1289,6 +1300,7 @@ class OpenlistPlugin(Star):
             return
 
         item_to_download = None
+        full_path_override = None
 
         if path.isdigit():
             number = int(path)
@@ -1307,6 +1319,7 @@ class OpenlistPlugin(Star):
                     file_info = await client.get_file_info(path)
                     if file_info and not file_info.get("is_dir", False):
                         item_to_download = file_info
+                        full_path_override = path  # Save the full path
                     else:
                         yield event.plain_result(f"❌ 无法下载，文件不存在或路径为目录: {path}")
                         return
@@ -1317,7 +1330,7 @@ class OpenlistPlugin(Star):
         
         if item_to_download:
             yield event.plain_result(f"📥 正在准备下载文件: {item_to_download.get('name', '')}...")
-            async for result in self._download_file(event, item_to_download, user_config):
+            async for result in self._download_file(event, item_to_download, user_config, full_path_override=full_path_override):
                 yield result
 
     @openlist_group.command("quit")
