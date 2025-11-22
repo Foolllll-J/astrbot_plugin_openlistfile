@@ -9,6 +9,12 @@
                 "default": "",
                 "hint": "http://localhost:5244"
             },
+            "public_openlist_url": {
+                "description": "Openlist公网服务地址 (可选)",
+                "type": "string",
+                "default": "",
+                "hint": "当默认地址是内网地址时，可用于构建公网下载链接"
+            },
             "default_username": {
                 "description": "默认用户名",
                 "type": "string",
