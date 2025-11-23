@@ -9,10 +9,9 @@ from urllib.parse import urljoin, quote, urlparse
 import aiohttp
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.message_components import Plain, Image, File
 from astrbot.api import logger
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.api.event.filter import CustomFilter
 from astrbot.core.config import AstrBotConfig
 
@@ -222,7 +221,7 @@ class UserConfigManager:
         self.plugin_name = plugin_name
         self.user_id = user_id
         self.config_dir = os.path.join(
-            get_astrbot_data_path(), "plugins_data", plugin_name, "users"
+            StarTools.get_data_dir(plugin_name), "users"
         )
         os.makedirs(self.config_dir, exist_ok=True)
         self.config_file = os.path.join(self.config_dir, f"{user_id}.json")
@@ -274,7 +273,7 @@ class CacheManager:
     def __init__(self, plugin_name: str):
         self.plugin_name = plugin_name
         self.cache_dir = os.path.join(
-            get_astrbot_data_path(), "plugins_data", plugin_name, "cache"
+            StarTools.get_data_dir(plugin_name), "cache"
         )
         os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -356,9 +355,7 @@ class GlobalConfigManager:
     """全局配置管理器"""
 
     def __init__(self, plugin_name: str):
-        self.config_dir = os.path.join(
-            get_astrbot_data_path(), "plugins_data", plugin_name
-        )
+        self.config_dir = StarTools.get_data_dir(plugin_name)
         os.makedirs(self.config_dir, exist_ok=True)
         self.config_file = os.path.join(self.config_dir, "global_config.json")
         self.default_config = {
@@ -658,7 +655,7 @@ class OpenlistPlugin(Star):
                 if not download_url:
                     yield event.plain_result("❌ 无法获取下载链接")
                     return
-                downloads_dir = os.path.join(get_astrbot_data_path(), "plugins_data", "openlist", "downloads")
+                downloads_dir = os.path.join(StarTools.get_data_dir("openlist"), "downloads")
                 os.makedirs(downloads_dir, exist_ok=True)
                 safe_filename = "".join(c for c in file_name if c.isalnum() or c in "._- ")[:100]
                 temp_file_path = os.path.join(downloads_dir, f"{user_id}_{int(time.time())}_{safe_filename}")
