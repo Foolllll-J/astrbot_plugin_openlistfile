@@ -396,7 +396,7 @@ class GlobalConfigManager:
     "astrbot_plugin_openlistfile",
     "Foolllll",
     "Openlist文件管理插件",
-    "1.1.0",
+    "1.1.1",
     "https://github.com/Foolllll-J/astrbot_plugin_openlistfile",
 )
 class OpenlistPlugin(Star):
@@ -772,6 +772,7 @@ class OpenlistPlugin(Star):
                     result = await client.list_files(target_path)
                     if result:
                         files = result.get("content", [])
+                        self._update_user_navigation_state(user_id, target_path, files)
                         formatted_list = self._format_file_list(files, target_path, user_config, user_id)
                         yield event.plain_result(f"📁 当前目录已更新:\n\n{formatted_list}")
                 else:
@@ -814,6 +815,7 @@ class OpenlistPlugin(Star):
                     result = await client.list_files(target_path)
                     if result:
                         files = result.get("content", [])
+                        self._update_user_navigation_state(user_id, target_path, files)
                         formatted_list = self._format_file_list(files, target_path, user_config, user_id)
                         yield event.plain_result(f"📁 当前目录已更新:\n\n{formatted_list}")
                 else:
