@@ -1,6 +1,6 @@
 name: astrbot_plugin_openlistfile # 插件唯一识别名
 display_name: Openlist助手
-desc: Openlist文件管理插件，支持浏览、搜索、下载Openlist上的文件。 # 插件简短描述
-version: v1.1.1 # 插件版本号
+desc: Openlist文件管理插件，支持浏览、搜索、上传和下载Openlist上的文件。 # 插件简短描述
+version: v1.1.2 # 插件版本号
 author: Foolllll # 作者
 repo: https://github.com/Foolllll-J/astrbot_plugin_openlistfile # 插件仓库地址

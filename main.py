@@ -393,7 +393,7 @@ class GlobalConfigManager:
     "astrbot_plugin_openlistfile",
     "Foolllll",
     "Openlist文件管理插件",
-    "1.1.1",
+    "1.1.2",
     "https://github.com/Foolllll-J/astrbot_plugin_openlistfile",
 )
 class OpenlistPlugin(Star):
@@ -617,8 +617,8 @@ class OpenlistPlugin(Star):
         if not is_search_result:
              result += f"\n   • /ol quit - 返回上级目录"
         if total_pages > 1:
-            result += f"\n   • /ol page prev - ⬅️ 上一页"
-            result += f"\n   • /ol page next - ➡️ 下一页"
+            result += f"\n   • /ol prev - ⬅️ 上一页"
+            result += f"\n   • /ol next - ➡️ 下一页"
         return result
 
     async def _download_file(self, event: AstrMessageEvent, file_item: Dict, user_config: Dict, full_path_override: str = None):
@@ -962,9 +962,9 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 列出文件失败: {e}")
             yield event.plain_result(f"❌ 操作失败: {str(e)}")
 
-    @openlist_group.command("page")
-    async def page_command(self, event: AstrMessageEvent, action: str = "next"):
-        """在文件列表中进行翻页"""
+    @openlist_group.command("next")
+    async def next_page(self, event: AstrMessageEvent):
+        """下一页"""
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
         nav_state = self._get_user_navigation_state(user_id)
@@ -976,20 +976,35 @@ class OpenlistPlugin(Star):
         max_files_per_page = user_config.get("max_display_files", 20)
         total_pages = (len(all_items) + max_files_per_page - 1) // max_files_per_page
 
-        if action == "next":
-            if current_page < total_pages:
-                nav_state["current_page"] += 1
-            else:
-                yield event.plain_result("➡️ 已经是最后一页了。")
-                return
-        elif action == "prev":
-            if current_page > 1:
-                nav_state["current_page"] -= 1
-            else:
-                yield event.plain_result("⬅️ 已经是第一页了。")
-                return
+        if current_page < total_pages:
+            nav_state["current_page"] += 1
         else:
-            yield event.plain_result(f"❌ 未知的翻页操作: {action}。请使用 'next' 或 'prev'。")
+            yield event.plain_result("➡️ 已经是最后一页了。")
+            return
+
+        formatted_list = self._format_file_list(
+            all_items, nav_state["current_path"], user_config, user_id
+        )
+        yield event.plain_result(formatted_list)
+
+    @openlist_group.command("prev")
+    async def prev_page(self, event: AstrMessageEvent):
+        """上一页"""
+        user_id = event.get_sender_id()
+        user_config = self.get_user_config(user_id)
+        nav_state = self._get_user_navigation_state(user_id)
+        if not nav_state.get("items"):
+            yield event.plain_result("🤔 没有可供翻页的列表，请先使用 /ol ls 查看一个目录。")
+            return
+        current_page = nav_state.get("current_page", 1)
+        all_items = nav_state.get("items", [])
+        max_files_per_page = user_config.get("max_display_files", 20)
+        total_pages = (len(all_items) + max_files_per_page - 1) // max_files_per_page
+
+        if current_page > 1:
+            nav_state["current_page"] -= 1
+        else:
+            yield event.plain_result("⬅️ 已经是第一页了。")
             return
 
         formatted_list = self._format_file_list(
@@ -1225,9 +1240,8 @@ class OpenlistPlugin(Star):
    - 获取链接: 获取文件的下载链接。
      - 示例: `/ol ls 2` (如果2是文件)
 
-▶️ `/ol page <next|prev>`
-   - 在 `ls` 的文件列表中进行翻页。
-     - 示例: `/ol page next` (下一页)
+▶️ `/ol next` - 下一页
+▶️ `/ol prev` - 上一页
 
 ▶️ `/ol quit`
    - 返回到上级目录。
