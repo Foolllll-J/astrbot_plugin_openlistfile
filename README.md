@@ -1,13 +1,17 @@
-# Openlist 文件管理插件
+# <img src="https://raw.githubusercontent.com/OpenListTeam/Logo/main/logo.svg" width="32" height="32" style="vertical-align: middle;"> OpenList 助手
 
-这是一个用于 AstrBot 的 Openlist 文件管理插件，让您可以通过聊天界面方便地管理 Openlist 服务器上的文件。
+![License](https://img.shields.io/badge/license-AGPL--3.0-green?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white)
+![AstrBot](https://img.shields.io/badge/framework-AstrBot-ff6b6b?style=flat-square)
+
+这是一个用于 AstrBot 的 OpenList 文件管理插件，让您可以通过聊天界面方便地管理 OpenList 服务器上的文件。
 
 ## ✨ 主要功能
 
 * 📁 **智能导航** - 序号快速导航，支持一键进入文件夹或获取文件。
 * 📥 **直接下载** - 可下载文件并直接传送给用户。
 * 🔗 **链接获取** - 可获取文件的直接下载链接。
-* 📤 **文件上传** - 上传模式支持直接发送文件或图片上传到 Openlist。
+* 📤 **文件上传** - 上传模式支持直接发送文件或图片上传到 OpenList。
 * 🔍 **文件搜索** - 支持在指定目录中搜索目标文件。
 * 📋 **文件信息** - 查看文件详细信息（大小、修改时间等）。
 * ⚙️ **灵活设置** - 支持用户独立设置和全局设置两种模式。
@@ -19,13 +23,13 @@
 
 #### 1. 用户独立设置模式（默认）
 
-* 每个用户拥有独立的 Openlist 连接设置。
-* 用户设置互不干扰，支持连接不同的 Openlist 服务器。
+* 每个用户拥有独立的 OpenList 连接设置。
+* 用户设置互不干扰，支持连接不同的 OpenList 服务器。
 * 用户首次使用需要自行设置连接信息。
 
 #### 2. 全局设置模式
 
-* 所有用户共享同一个 Openlist 服务器连接。
+* 所有用户共享同一个 OpenList 服务器连接。
 * 管理员在 WebUI 中统一设置。
 * 适合团队共享同一个文件服务器的场景。
 
@@ -200,7 +204,7 @@
 
 | **设置项**             | **类型** | **默认值**      | **说明**                 |
 | ---------------------- | -------- | --------------- | ------------------------ |
-| `default_openlist_url` | string   | ""              | 默认 Openlist 服务器地址 |
+| `default_openlist_url` | string   | ""              | 默认 OpenList 服务器地址 |
 | `public_openlist_url` | string   | ""              | 公网服务地址 (可选) |
 | `default_username`     | string   | ""              | 默认用户名               |
 | `default_password`     | string   | ""              | 默认密码                 |
@@ -237,7 +241,7 @@ data/plugins_data/openlist/
 ### 用户首次使用
 
 1. 运行设置向导：`/ol config setup`
-2. 按提示设置 Openlist 服务器地址
+2. 按提示设置 OpenList 服务器地址
 3. 测试连接：`/ol config test`
 4. 开始使用：`/ol ls /`
 
@@ -254,13 +258,13 @@ data/plugins_data/openlist/
 
 ### 常见问题
 
-**Q: 提示“❌ 请先配置 Openlist 连接信息”**
+**Q: 提示“❌ 请先配置 OpenList 连接信息”**
 
 A: 这是因为您处于“用户独立设置模式”。请运行 `/ol config setup` 设置向导，或使用 `/ol config set openlist_url <您的地址>` 进行手动设置。
 
 **Q: 为什么 `search` 搜不到文件，但 `ls` 能看到？**
 
-A: 这是因为 `search` 依赖服务器的**搜索索引**，而 `ls` 是实时列出文件。如果文件是新添加的，服务器索引可能尚未更新。请联系您的 Openlist 服务器管理员，在后台对相应存储**手动更新索引**。
+A: 这是因为 `search` 依赖服务器的**搜索索引**，而 `ls` 是实时列出文件。如果文件是新添加的，服务器索引可能尚未更新。请联系您的 OpenList 服务器管理员，在后台对相应存储**手动更新索引**。
 
 **Q: 连接测试失败**
 
@@ -321,7 +325,7 @@ A: 请检查：1. 服务器地址是否正确（包含`http://`或`https://`）�
 * ✨ **功能**:
   * 基于 `astrbot_plugin_alistfile` 进行二次开发。
   * 支持基本的文件浏览、搜索、信息查看功能。
-  * 支持 Openlist 签名，若服务器端开启签名，插件获取的下载链接可**免登录直接下载**。启用签名可实现免登录下载文件。
+  * 支持 OpenList 签名，若服务器端开启签名，插件获取的下载链接可**免登录直接下载**。启用签名可实现免登录下载文件。
 
 ## 📞 技术支持
 

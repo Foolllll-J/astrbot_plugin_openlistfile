@@ -63,9 +63,15 @@ class OpenlistClient:
                     if result.get("code") == 200:
                         self.token = result.get("data", {}).get("token", "")
                         return True
-                return False
+                    else:
+                        logger.error(f"OpenList登录失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 用户名: {self.username}")
+                        return False
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"OpenList登录失败 - HTTP状态: {resp.status}, 响应: {error_text}, 用户名: {self.username}")
+                    return False
         except Exception as e:
-            logger.error(f"OpenList登录失败: {e}")
+            logger.error(f"OpenList登录失败: {e}, 用户名: {self.username}, 服务器: {self.base_url}", exc_info=True)
             return False
 
     async def list_files(
@@ -92,9 +98,15 @@ class OpenlistClient:
                     result = await resp.json()
                     if result.get("code") == 200:
                         return result.get("data")
-                return None
+                    else:
+                        logger.error(f"获取文件列表失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        return None
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"获取文件列表失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    return None
         except Exception as e:
-            logger.error(f"获取文件列表失败: {e}")
+            logger.error(f"获取文件列表失败: {e}, 路径: {path}", exc_info=True)
             return None
 
     async def get_file_info(self, path: str) -> Optional[Dict]:
@@ -113,9 +125,15 @@ class OpenlistClient:
                     result = await resp.json()
                     if result.get("code") == 200:
                         return result.get("data")
-                return None
+                    else:
+                        logger.error(f"获取文件信息失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        return None
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"获取文件信息失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    return None
         except Exception as e:
-            logger.error(f"获取文件信息失败: {e}")
+            logger.error(f"获取文件信息失败: {e}, 路径: {path}", exc_info=True)
             return None
 
     async def search_files(self, keyword: str, path: str = "/", per_page: int = 1000) -> Optional[List[Dict]]:
@@ -141,12 +159,15 @@ class OpenlistClient:
                     if result.get("code") == 200:
                         content = result.get("data", {}).get("content")
                         return content if content is not None else []
+                    else:
+                        logger.error(f"搜索文件失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 关键词: {keyword}, 路径: {path}")
+                        return []
                 else:
                     error_text = await resp.text()
-                    logger.info(f"搜索文件失败: {error_text}")
-                return []
+                    logger.error(f"搜索文件失败 - HTTP状态: {resp.status}, 响应: {error_text}, 关键词: {keyword}, 路径: {path}")
+                    return []
         except Exception as e:
-            logger.error(f"搜索文件失败: {e}", exc_info=True)
+            logger.error(f"搜索文件失败: {e}, 关键词: {keyword}, 路径: {path}", exc_info=True)
             return []
 
     async def get_download_url(self, path: str) -> Optional[str]:
@@ -204,13 +225,18 @@ class OpenlistClient:
             ) as response:
                 if response.status == 200:
                     result = await response.json()
-                    return result.get("code") == 200
+                    if result.get("code") == 200:
+                        return True
+                    else:
+                        logger.error(f"上传失败，服务器返回错误 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 完整响应: {result}")
+                        return False
                 else:
-                    logger.error(f"上传失败，HTTP状态: {response.status}")
+                    error_text = await response.text()
+                    logger.error(f"上传失败 - HTTP状态: {response.status}, 响应内容: {error_text}, 目标路径: {target_path}/{filename}")
                     return False
 
         except Exception as e:
-            logger.error(f"上传文件失败: {e}")
+            logger.error(f"上传文件失败: {e}, 文件路径: {file_path}, 目标路径: {target_path}/{filename}", exc_info=True)
             return False
 
 
@@ -392,8 +418,8 @@ class GlobalConfigManager:
 @register(
     "astrbot_plugin_openlistfile",
     "Foolllll",
-    "Openlist文件管理插件",
-    "1.1.2",
+    "OpenList助手",
+    "1.1.3",
     "https://github.com/Foolllll-J/astrbot_plugin_openlistfile",
 )
 class OpenlistPlugin(Star):
@@ -681,10 +707,12 @@ class OpenlistPlugin(Star):
                                 except: pass
                             asyncio.create_task(cleanup_file())
                         else:
-                            yield event.plain_result(f"❌ 下载失败: HTTP {response.status}")
+                            error_text = await response.text()
+                            logger.error(f"用户 {user_id} 下载文件失败 - HTTP状态: {response.status}, 响应: {error_text}, 文件: {file_name}, URL: {download_url}")
+                            yield event.plain_result(f"❌ 下载失败: HTTP {response.status}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
         except Exception as e:
-            logger.error(f"用户 {user_id} 下载文件失败: {e}")
-            yield event.plain_result(f"❌ 下载失败: {str(e)}")
+            logger.error(f"用户 {user_id} 下载文件失败: {e}, 文件: {file_name}, 路径: {file_path}", exc_info=True)
+            yield event.plain_result(f"❌ 下载失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     async def _get_and_send_download_link(self, event: AstrMessageEvent, item: Dict, user_config: Dict, full_path: str = None):
         """获取指定项目的文件链接并发送"""
@@ -720,10 +748,11 @@ class OpenlistPlugin(Star):
                     result_text += "💡 提示: 请复制链接并在浏览器中打开以下载文件。"
                     yield event.plain_result(result_text)
                 else:
+                    logger.warning(f"用户 {user_id} 无法获取下载链接 - 路径: {file_path}, 文件名: {item.get('name', '')}")
                     yield event.plain_result(f"❌ 无法获取下载链接，文件可能不存在或为目录: {file_path}")
         except Exception as e:
-            logger.error(f"用户 {user_id} 获取下载链接失败: {e}")
-            yield event.plain_result(f"❌ 操作失败: {str(e)}")
+            logger.error(f"用户 {user_id} 获取下载链接失败: {e}, 路径: {file_path}, 文件名: {item.get('name', '')}", exc_info=True)
+            yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     async def _upload_file(self, event: AstrMessageEvent, file_component: File, user_config: Dict):
         user_id = event.get_sender_id()
@@ -773,10 +802,10 @@ class OpenlistPlugin(Star):
                         formatted_list = self._format_file_list(files, target_path, user_config, user_id)
                         yield event.plain_result(f"📁 当前目录已更新:\n\n{formatted_list}")
                 else:
-                    yield event.plain_result(f"❌ 上传失败，请检查网络连接和权限")
+                    yield event.plain_result(f"❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
         except Exception as e:
-            logger.error(f"用户 {user_id} 上传文件失败: {e}")
-            yield event.plain_result(f"❌ 上传失败: {str(e)}")
+            logger.error(f"用户 {user_id} 上传文件失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
             self._set_user_upload_waiting(user_id, False)
 
     async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
@@ -816,10 +845,10 @@ class OpenlistPlugin(Star):
                         formatted_list = self._format_file_list(files, target_path, user_config, user_id)
                         yield event.plain_result(f"📁 当前目录已更新:\n\n{formatted_list}")
                 else:
-                    yield event.plain_result(f"❌ 上传失败，请检查网络连接和权限")
+                    yield event.plain_result(f"❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
         except Exception as e:
-            logger.error(f"用户 {user_id} 上传图片失败: {e}")
-            yield event.plain_result(f"❌ 上传失败: {str(e)}")
+            logger.error(f"用户 {user_id} 上传图片失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
             self._set_user_upload_waiting(user_id, False)
 
     @filter.command_group("ol")
@@ -911,7 +940,8 @@ class OpenlistPlugin(Star):
                     else:
                         yield event.plain_result("❌ Openlist连接失败，请检查配置")
             except Exception as e:
-                yield event.plain_result(f"❌ 连接测试失败: {str(e)}")
+                logger.error(f"用户 {user_id} 连接测试失败: {e}, 服务器: {user_config.get('openlist_url')}", exc_info=True)
+                yield event.plain_result(f"❌ 连接测试失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
         elif action == "clear_cache":
             self.cache_manager.clear_cache(user_id)
             yield event.plain_result("✅ 已清理您的文件列表缓存")
@@ -957,10 +987,11 @@ class OpenlistPlugin(Star):
                     formatted_list = self._format_file_list(files, target_path, user_config, user_id)
                     yield event.plain_result(formatted_list)
                 else:
+                    logger.warning(f"用户 {user_id} 无法访问路径: {target_path}")
                     yield event.plain_result(f"❌ 无法访问路径: {target_path}")
         except Exception as e:
-            logger.error(f"用户 {user_id} 列出文件失败: {e}")
-            yield event.plain_result(f"❌ 操作失败: {str(e)}")
+            logger.error(f"用户 {user_id} 列出文件失败: {e}, 路径: {target_path}", exc_info=True)
+            yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("next")
     async def next_page(self, event: AstrMessageEvent):
@@ -1037,8 +1068,8 @@ class OpenlistPlugin(Star):
                 else:
                     yield event.plain_result(f"🔍 未找到包含 '{keyword}' 的文件")
         except Exception as e:
-            logger.error(f"用户 {user_id} 搜索文件失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 搜索失败: {str(e)}")
+            logger.error(f"用户 {user_id} 搜索文件失败: {e}, 关键词: {keyword}, 路径: {path}", exc_info=True)
+            yield event.plain_result(f"❌ 搜索失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("info")
     async def file_info(self, event: AstrMessageEvent, path: str):
@@ -1072,10 +1103,11 @@ class OpenlistPlugin(Star):
                         if download_url: info_text += f"\n🔗 下载链接:\n{download_url}"
                     yield event.plain_result(info_text)
                 else:
+                    logger.warning(f"用户 {user_id} 文件不存在: {path}")
                     yield event.plain_result(f"❌ 文件不存在: {path}")
         except Exception as e:
-            logger.error(f"用户 {user_id} 获取文件信息失败: {e}")
-            yield event.plain_result(f"❌ 操作失败: {str(e)}")
+            logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径: {path}", exc_info=True)
+            yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("download")
     async def get_download_link(self, event: AstrMessageEvent, path: str):
@@ -1114,8 +1146,8 @@ class OpenlistPlugin(Star):
                         yield event.plain_result(f"❌ 无法下载，文件不存在或路径为目录: {path}")
                         return
             except Exception as e:
-                logger.error(f"用户 {user_id} 获取文件信息失败: {e}")
-                yield event.plain_result(f"❌ 操作失败: {str(e)}")
+                logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径: {path}", exc_info=True)
+                yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
                 return
 
         if item_to_download:
@@ -1146,10 +1178,11 @@ class OpenlistPlugin(Star):
                     formatted_list = self._format_file_list(files, previous_path, user_config, user_id)
                     yield event.plain_result(f"⬅️ 已返回上级目录\n\n{formatted_list}")
                 else:
+                    logger.warning(f"用户 {user_id} 无法访问上级目录: {previous_path}")
                     yield event.plain_result(f"❌ 无法访问上级目录: {previous_path}")
         except Exception as e:
-            logger.error(f"用户 {user_id} 回退目录失败: {e}")
-            yield event.plain_result(f"❌ 回退失败: {str(e)}")
+            logger.error(f"用户 {user_id} 回退目录失败: {e}, 目标路径: {previous_path}", exc_info=True)
+            yield event.plain_result(f"❌ 回退失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("upload")
     async def upload_command(self, event: AstrMessageEvent, action: str = ""):
