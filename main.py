@@ -256,12 +256,16 @@ class UserConfigManager:
             "username": "",
             "password": "",
             "token": "",
+            "public_openlist_url": "",
+            "fixed_base_directory": "",
             "max_display_files": 20,
             "allowed_extensions": [
                 ".txt", ".pdf", ".doc", ".docx", ".zip", ".rar",
                 ".jpg", ".png", ".gif", ".mp4", ".mp3",
             ],
             "enable_preview": True,
+            "enable_cache": True,
+            "cache_duration": 300,
             "setup_completed": False,
         }
 
@@ -456,55 +460,61 @@ class OpenlistPlugin(Star):
     def get_user_config(self, user_id: str) -> Dict:
         """获取用户配置"""
         require_user_auth = self.get_webui_config("require_user_auth", True)
-        default_openlist_url = self.get_webui_config("default_openlist_url", "")
-        public_openlist_url = self.get_webui_config("public_openlist_url", "")
-        default_username = self.get_webui_config("default_username", "")
-        default_password = self.get_webui_config("default_password", "")
-        default_token = self.get_webui_config("default_token", "")
-        fixed_base_directory = self.get_webui_config("fixed_base_directory", "")
-        max_display_files = self.get_webui_config("max_display_files", 20)
-        allowed_extensions = self.get_webui_config(
-            "allowed_extensions",
-            ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
-        )
-        enable_preview = self.get_webui_config("enable_preview", True)
+        
+        # 获取 WebUI/全局配置
+        global_cfg = {
+            "openlist_url": self.get_webui_config("default_openlist_url", ""),
+            "public_openlist_url": self.get_webui_config("public_openlist_url", ""),
+            "username": self.get_webui_config("default_username", ""),
+            "password": self.get_webui_config("default_password", ""),
+            "token": self.get_webui_config("default_token", ""),
+            "fixed_base_directory": self.get_webui_config("fixed_base_directory", ""),
+            "max_display_files": self.get_webui_config("max_display_files", 20),
+            "allowed_extensions": self.get_webui_config(
+                "allowed_extensions",
+                ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
+            ),
+            "enable_preview": self.get_webui_config("enable_preview", True),
+        }
 
         if require_user_auth:
             user_manager = self.get_user_config_manager(user_id)
             user_config = user_manager.load_config()
-            if not user_config.get("openlist_url") and default_openlist_url:
-                user_config["openlist_url"] = default_openlist_url
-            user_config["public_openlist_url"] = public_openlist_url
-            if not user_config.get("username") and default_username:
-                user_config["username"] = default_username
-            if not user_config.get("password") and default_password:
-                user_config["password"] = default_password
-            if not user_config.get("token") and default_token:
-                user_config["token"] = default_token
-            user_config["fixed_base_directory"] = fixed_base_directory
-            user_config["max_display_files"] = max_display_files
-            user_config["allowed_extensions"] = (
-                allowed_extensions.split(",")
-                if isinstance(allowed_extensions, str)
-                else allowed_extensions
-            )
-            user_config["enable_preview"] = enable_preview
-            return user_config
+            
+            # 合并逻辑：优先使用用户配置，如果用户配置为空则使用全局配置
+            merged_config = user_config.copy()
+            
+            # 基础连接信息
+            for key in ["openlist_url", "username", "password", "token", "public_openlist_url", "fixed_base_directory"]:
+                if not merged_config.get(key) and global_cfg.get(key):
+                    merged_config[key] = global_cfg[key]
+            
+            # 其他设置（如果用户配置中存在且不是默认值，则保留用户值；否则同步全局值）
+            # 注意：UserConfigManager.default_config 中定义了这些项的初始值
+            for key in ["max_display_files", "allowed_extensions", "enable_preview", "enable_cache", "cache_duration"]:
+                # 如果用户没改过（还是默认值）且全局有配置，则同步全局配置
+                if key == "allowed_extensions":
+                    # 扩展名特殊处理：转为列表
+                    if isinstance(merged_config.get(key), str):
+                        merged_config[key] = merged_config[key].split(",")
+                    elif not merged_config.get(key):
+                        merged_config[key] = global_cfg[key].split(",") if isinstance(global_cfg[key], str) else global_cfg[key]
+                else:
+                    # 对于数值和布尔值，如果用户配置里没有或者我们认为需要同步全局，则合并
+                    # 这里简单处理：如果用户配置里有，就用用户的。
+                    if key not in merged_config and key in global_cfg:
+                        merged_config[key] = global_cfg[key]
+            
+            # 确保 allowed_extensions 始终是列表
+            if isinstance(merged_config.get("allowed_extensions"), str):
+                merged_config["allowed_extensions"] = merged_config["allowed_extensions"].split(",")
+
+            return merged_config
         else:
-            # 未启用用户认证时使用全局配置
-            return {
-                "openlist_url": default_openlist_url,
-                "public_openlist_url": public_openlist_url,
-                "username": default_username,
-                "password": default_password,
-                "token": default_token,
-                "fixed_base_directory": fixed_base_directory,
-                "max_display_files": max_display_files,
-                "allowed_extensions": allowed_extensions.split(",")
-                if isinstance(allowed_extensions, str)
-                else allowed_extensions,
-                "enable_preview": enable_preview,
-            }
+            # 未启用用户认证时直接使用全局配置
+            if isinstance(global_cfg["allowed_extensions"], str):
+                global_cfg["allowed_extensions"] = global_cfg["allowed_extensions"].split(",")
+            return global_cfg
 
     def _validate_config(self, user_config: Dict) -> bool:
         """验证配置是否有效"""
@@ -909,24 +919,42 @@ class OpenlistPlugin(Star):
                 return
             user_manager = self.get_user_config_manager(user_id)
             user_config = user_manager.load_config()
-            valid_keys = ["openlist_url", "username", "password", "token", "max_display_files"]
+            valid_keys = [
+                "openlist_url", "username", "password", "token", 
+                "max_display_files", "public_openlist_url", 
+                "fixed_base_directory", "allowed_extensions", "enable_preview",
+                "enable_cache", "cache_duration"
+            ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
-            if key == "max_display_files":
+            
+            if key in ["max_display_files", "cache_duration"]:
                 try:
                     value = int(value)
-                    if value < 1 or value > 100:
+                    if key == "max_display_files" and (value < 1 or value > 100):
                         yield event.plain_result("❌ max_display_files 必须在1-100之间")
                         return
+                    if key == "cache_duration" and (value < 1):
+                        yield event.plain_result("❌ cache_duration 必须大于0")
+                        return
                 except ValueError:
-                    yield event.plain_result("❌ max_display_files 必须是数字")
+                    yield event.plain_result(f"❌ {key} 必须是数字")
                     return
+            elif key in ["enable_preview", "enable_cache"]:
+                value = value.lower() in ["true", "1", "yes", "on"]
+            elif key == "allowed_extensions":
+                # 允许输入逗号分隔的字符串，存为列表
+                if isinstance(value, str):
+                    value = [ext.strip() for ext in value.split(",") if ext.strip()]
+            
             user_config[key] = value
             if key == "openlist_url" and value:
                 user_config["setup_completed"] = True
             user_manager.save_config(user_config)
-            yield event.plain_result(f"✅ 已为用户 {event.get_sender_name()} 设置 {key} = {value}")
+            
+            display_value = "***" if key in ["password", "token"] else str(value)
+            yield event.plain_result(f"✅ 已为用户 {event.get_sender_name()} 设置 {key} = {display_value}")
         elif action == "test":
             user_config = self.get_user_config(user_id)
             if not self._validate_config(user_config):
