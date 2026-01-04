@@ -71,6 +71,7 @@ class GlobalConfigManager:
         os.makedirs(self.config_dir, exist_ok=True)
         self.config_file = os.path.join(self.config_dir, "global_config.json")
         self.default_config = {
+            "require_user_auth": False,
             "default_openlist_url": "",
             "public_openlist_url": "",
             "default_username": "",
@@ -85,7 +86,6 @@ class GlobalConfigManager:
             "cache_duration": 300,
             "max_download_size": 50,
             "max_upload_size": 100,
-            "require_user_auth": True,
             "autobackup_groups": [], # 启用自动备份的群号列表
             "backup_allowed_extensions": "",
             "backup_max_size": 0,

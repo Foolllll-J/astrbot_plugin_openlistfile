@@ -35,7 +35,7 @@ class OpenlistUploadFilter(CustomFilter):
     "astrbot_plugin_openlistfile",
     "Foolllll",
     "OpenList助手",
-    "1.1.3",
+    "1.2.0",
     "https://github.com/Foolllll-J/astrbot_plugin_openlistfile",
 )
 class OpenlistPlugin(Star):
@@ -175,8 +175,9 @@ class OpenlistPlugin(Star):
     def _get_item_by_number(self, user_id: str, number: int) -> Optional[Dict]:
         """根据序号获取文件或目录项"""
         nav_state = self._get_user_navigation_state(user_id)
-        if 1 <= number <= len(nav_state["items"]):
-            return nav_state["items"][number - 1]
+        items = nav_state.get("items")
+        if items and 1 <= number <= len(items):
+            return items[number - 1]
         return None
 
     def _get_user_upload_state(self, user_id: str) -> Dict:
@@ -391,7 +392,7 @@ class OpenlistPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def handle_group_file_upload(self, event: AstrMessageEvent):
-        """处理群文件上传事件（自动备份，参考 Filechecker 移植解析逻辑）"""
+        """处理群文件上传事件（自动备份）"""
         raw_event_data = event.message_obj.raw_message
         message_list = raw_event_data.get("message")
         if not isinstance(message_list, list):
@@ -761,12 +762,12 @@ class OpenlistPlugin(Star):
             yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
             self._set_user_upload_waiting(user_id, False)
 
-    @filter.command_group("ol")
+    @filter.command_group("ol", alias=["网盘"])
     def openlist_group(self):
         """Openlist文件管理命令组"""
         pass
 
-    @openlist_group.command("config")
+    @openlist_group.command("config", alias=["配置"])
     async def config_command(self, event: AstrMessageEvent, action: str = "show", key: str = "", value: str = ""):
         # 配置命令实现
         user_id = event.get_sender_id()
@@ -824,13 +825,14 @@ class OpenlistPlugin(Star):
                 "openlist_url", "username", "password", "token", 
                 "max_display_files", "public_openlist_url", 
                 "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
-                "enable_cache", "cache_duration", "max_download_size","backup_allowed_extensions", "backup_max_size"
+                "enable_cache", "cache_duration", "max_download_size", "max_upload_size",
+                "backup_allowed_extensions", "backup_max_size"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
             
-            if key in ["max_display_files", "cache_duration", "backup_max_size", "max_preview_size", "text_preview_length"]:
+            if key in ["max_display_files", "cache_duration", "backup_max_size", "max_preview_size", "text_preview_length", "max_download_size", "max_upload_size"]:
                 try:
                     value = int(value)
                     if key == "max_display_files" and (value < 1 or value > 100):
@@ -841,6 +843,12 @@ class OpenlistPlugin(Star):
                         return
                     if key == "backup_max_size" and (value < 0):
                         yield event.plain_result("❌ backup_max_size 必须大于等于0")
+                        return
+                    if key == "max_download_size" and (value < 0):
+                        yield event.plain_result("❌ max_download_size 必须大于等于0")
+                        return
+                    if key == "max_upload_size" and (value < 0):
+                        yield event.plain_result("❌ max_upload_size 必须大于等于0")
                         return
                     if key == "max_preview_size" and (value < -1):
                         yield event.plain_result("❌ max_preview_size 必须大于等于 -1 (-1表示禁用, 0表示不限制)")
@@ -888,7 +896,7 @@ class OpenlistPlugin(Star):
         else:
             yield event.plain_result("❌ 未知的操作，支持: show, set, test, setup, clear_cache")
 
-    @openlist_group.command("ls")
+    @openlist_group.command("ls", alias=["列表", "直链"])
     async def list_files(self, event: AstrMessageEvent, path: str = "/"):
         """列出文件和目录，或获取文件链接"""
         user_id = event.get_sender_id()
@@ -922,7 +930,7 @@ class OpenlistPlugin(Star):
                     return
                 list_result = await client.list_files(target_path, per_page=0)
                 if list_result is not None:
-                    files = list_result.get("content", [])
+                    files = list_result.get("content") or []
                     self._update_user_navigation_state(user_id, target_path, files)
                     formatted_list = self._format_file_list(files, target_path, user_config, user_id)
                     yield event.plain_result(formatted_list)
@@ -933,7 +941,7 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 列出文件失败: {e}, 路径: {target_path}", exc_info=True)
             yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
-    @openlist_group.command("next")
+    @openlist_group.command("next", alias=["下一页"])
     async def next_page(self, event: AstrMessageEvent):
         """下一页"""
         user_id = event.get_sender_id()
@@ -958,7 +966,7 @@ class OpenlistPlugin(Star):
         )
         yield event.plain_result(formatted_list)
 
-    @openlist_group.command("prev")
+    @openlist_group.command("prev", alias=["上一页"])
     async def prev_page(self, event: AstrMessageEvent):
         """上一页"""
         user_id = event.get_sender_id()
@@ -983,7 +991,7 @@ class OpenlistPlugin(Star):
         )
         yield event.plain_result(formatted_list)
 
-    @openlist_group.command("search")
+    @openlist_group.command("search", alias=["搜索"])
     async def search_files(self, event: AstrMessageEvent, keyword: str, path: str = "/"):
         """搜索文件"""
         if not keyword:
@@ -1011,7 +1019,7 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 搜索文件失败: {e}, 关键词: {keyword}, 路径: {path}", exc_info=True)
             yield event.plain_result(f"❌ 搜索失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
-    @openlist_group.command("info")
+    @openlist_group.command("info", alias=["信息"])
     async def file_info(self, event: AstrMessageEvent, path: str):
         """获取文件详细信息"""
         if not path:
@@ -1049,7 +1057,7 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径: {path}", exc_info=True)
             yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
-    @openlist_group.command("download")
+    @openlist_group.command("download", alias=["下载"])
     async def get_download_link(self, event: AstrMessageEvent, path: str):
         """直接下载指定的文件"""
         if not path:
@@ -1095,7 +1103,7 @@ class OpenlistPlugin(Star):
             async for result in self._download_file(event, item_to_download, user_config, full_path_override=full_path_override):
                 yield result
 
-    @openlist_group.command("quit")
+    @openlist_group.command("quit", alias=["上一级", "返回"])
     async def quit_navigation(self, event: AstrMessageEvent):
         """返回上级目录"""
         user_id = event.get_sender_id()
@@ -1112,7 +1120,7 @@ class OpenlistPlugin(Star):
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 result = await client.list_files(previous_path)
                 if result is not None:
-                    files = result.get("content", [])
+                    files = result.get("content") or []
                     nav_state["current_path"] = previous_path
                     nav_state["items"] = files
                     formatted_list = self._format_file_list(files, previous_path, user_config, user_id)
@@ -1124,7 +1132,7 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 回退目录失败: {e}, 目标路径: {previous_path}", exc_info=True)
             yield event.plain_result(f"❌ 回退失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
-    @openlist_group.command("upload")
+    @openlist_group.command("upload", alias=["上传"])
     async def upload_command(self, event: AstrMessageEvent, action: str = ""):
         """上传文件命令"""
         user_id = event.get_sender_id()
@@ -1193,7 +1201,7 @@ class OpenlistPlugin(Star):
             async for result in self._upload_file(event, file_component, user_config):
                 yield result
 
-    @openlist_group.command("backup")
+    @openlist_group.command("backup", alias=["备份"])
     async def backup_command(self, event: AstrMessageEvent, arg1: str = None, arg2: str = None):
         """群文件备份到 Openlist。用法: /ol backup [@群号] [/路径]"""
         user_id = event.get_sender_id()
@@ -1289,7 +1297,7 @@ class OpenlistPlugin(Star):
         else:
             yield event.plain_result("❌ 未知操作。请使用 enable 或 disable。")
 
-    @openlist_group.command("restore")
+    @openlist_group.command("restore", alias=["恢复"])
     async def restore_command(self, event: AstrMessageEvent, path: str, target: str = None):
         """将 Openlist 路径中的文件恢复到群组或私聊。用法: /ol restore /路径 [@群号]"""
         user_id = event.get_sender_id()
@@ -1631,15 +1639,137 @@ class OpenlistPlugin(Star):
         except Exception as e:
             logger.error(f"预览失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 预览失败: {str(e)}")
-    @openlist_group.command("help")
+
+    @openlist_group.command("rm", alias=["删除"])
+    async def remove_command(self, event: AstrMessageEvent, path: str):
+        """删除文件或文件夹。用法: /ol rm <序号或路径>"""
+        if not path:
+            yield event.plain_result("❌ 请提供文件路径或序号")
+            return
+        user_id = event.get_sender_id()
+        user_config = self.get_user_config(user_id)
+        if not self._validate_config(user_config):
+            yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+            return
+
+        target_dir = None
+        target_names = []
+        display_name = ""
+
+        if path.isdigit():
+            number = int(path)
+            item = self._get_item_by_number(user_id, number)
+            if item:
+                nav_state = self._get_user_navigation_state(user_id)
+                target_dir = nav_state["current_path"]
+                target_names = [item["name"]]
+                display_name = item["name"]
+            else:
+                yield event.plain_result(f"❌ 序号 {number} 无效。")
+                return
+        else:
+            # 处理绝对路径
+            full_path = path if path.startswith("/") else f"/{path}"
+            target_dir = os.path.dirname(full_path)
+            target_names = [os.path.basename(full_path)]
+            display_name = path
+
+        try:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                success = await client.remove(target_dir, target_names)
+                if success:
+                    yield event.plain_result(f"✅ 已删除: {display_name}")
+                    
+                    # 检查是否删除了当前路径或其父目录
+                    nav_state = self._get_user_navigation_state(user_id)
+                    current_path = nav_state["current_path"]
+                    
+                    # 构建被删除项目的完整路径列表
+                    deleted_full_paths = []
+                    for name in target_names:
+                        p = f"{target_dir.rstrip('/')}/{name}"
+                        if not p.startswith("/"): p = "/" + p
+                        deleted_full_paths.append(p)
+                    
+                    # 如果当前路径被删除（或当前路径是其子目录），返回根目录
+                    is_current_path_deleted = False
+                    for deleted_path in deleted_full_paths:
+                        if current_path == deleted_path or current_path.startswith(deleted_path + "/"):
+                            is_current_path_deleted = True
+                            break
+                    
+                    if is_current_path_deleted:
+                        # 返回根目录并刷新
+                        result = await client.list_files("/")
+                        if result is not None:
+                            files = result.get("content") or []
+                            self.user_navigation_state[user_id] = {
+                                "current_path": "/",
+                                "items": files,
+                                "parent_paths": [],
+                                "current_page": 1,
+                            }
+                            yield event.plain_result("⚠️ 当前目录已被删除，已自动返回根目录。")
+                    elif target_dir == current_path:
+                        # 如果在当前目录下删除了某个项目，刷新当前目录
+                        result = await client.list_files(current_path)
+                        if result is not None:
+                            files = result.get("content") or []
+                            self._update_user_navigation_state(user_id, current_path, files)
+                else:
+                    yield event.plain_result(f"❌ 删除失败，请检查权限或路径是否正确")
+        except Exception as e:
+            logger.error(f"用户 {user_id} 删除失败: {e}, 路径: {path}", exc_info=True)
+            yield event.plain_result(f"❌ 删除失败: {str(e)}")
+
+    @openlist_group.command("mkdir", alias=["新建"])
+    async def mkdir_command(self, event: AstrMessageEvent, name: str):
+        """创建文件夹。用法: /ol mkdir <文件夹名或路径>"""
+        if not name:
+            yield event.plain_result("❌ 请提供文件夹名称或路径")
+            return
+        user_id = event.get_sender_id()
+        user_config = self.get_user_config(user_id)
+        if not self._validate_config(user_config):
+            yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+            return
+
+        # 如果不是绝对路径，则在当前目录下创建
+        if not name.startswith("/"):
+            nav_state = self._get_user_navigation_state(user_id)
+            full_path = f"{nav_state['current_path'].rstrip('/')}/{name}"
+        else:
+            full_path = name
+
+        try:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                success = await client.mkdir(full_path)
+                if success:
+                    yield event.plain_result(f"✅ 已创建文件夹: {name}")
+                    # 如果在当前目录下创建，刷新列表
+                    nav_state = self._get_user_navigation_state(user_id)
+                    current_path = nav_state["current_path"]
+                    # 检查创建的文件夹是否在当前目录下（直接子目录）
+                    if os.path.dirname(full_path) == current_path.rstrip("/") or (current_path == "/" and os.path.dirname(full_path) == "/"):
+                        result = await client.list_files(current_path)
+                        if result:
+                            files = result.get("content") or []
+                            self._update_user_navigation_state(user_id, current_path, files)
+                else:
+                    yield event.plain_result(f"❌ 创建文件夹失败")
+        except Exception as e:
+            logger.error(f"用户 {user_id} 创建文件夹失败: {e}, 名称: {name}", exc_info=True)
+            yield event.plain_result(f"❌ 创建失败: {str(e)}")
+
+    @openlist_group.command("help", alias=["帮助"])
     async def help_command(self, event: AstrMessageEvent):
-        """显示全面且更新的帮助信息"""
+        """显示帮助信息"""
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
         global_cfg = self.get_global_config()
         is_user_auth_mode = global_cfg.get("require_user_auth", True)
 
-        help_text = f"""📚 Openlist 文件管理插件 帮助
+        help_text = f"""📚 OpenList 助手帮助
 
 ---
 核心导航指令

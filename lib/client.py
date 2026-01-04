@@ -247,6 +247,36 @@ class OpenlistClient:
             logger.error(f"创建目录失败: {e}, 路径: {path}", exc_info=True)
             return False
 
+    async def remove(self, dir_path: str, names: List[str]) -> bool:
+        """删除文件或目录"""
+        try:
+            headers = {}
+            if self.token:
+                headers["Authorization"] = self.token
+
+            remove_data = {
+                "dir": dir_path,
+                "names": names
+            }
+
+            async with self.session.post(
+                f"{self.base_url}/api/fs/remove", json=remove_data, headers=headers
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    if result.get("code") == 200:
+                        return True
+                    else:
+                        logger.error(f"删除失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 目录: {dir_path}, 文件: {names}")
+                        return False
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"删除失败 - HTTP状态: {resp.status}, 响应: {error_text}, 目录: {dir_path}, 文件: {names}")
+                    return False
+        except Exception as e:
+            logger.error(f"删除失败: {e}, 目录: {dir_path}, 文件: {names}", exc_info=True)
+            return False
+
     async def list_archive_contents(self, path: str, archive_path: str = "/") -> Optional[Dict]:
         """获取压缩包内的文件列表"""
         try:
