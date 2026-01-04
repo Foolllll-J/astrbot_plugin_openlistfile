@@ -23,13 +23,12 @@ class UserConfigManager:
             "public_openlist_url": "",
             "fixed_base_directory": "",
             "max_display_files": 20,
-            "allowed_extensions": [
-                ".txt", ".pdf", ".doc", ".docx", ".zip", ".rar",
-                ".jpg", ".png", ".gif", ".mp4", ".mp3",
-            ],
+            "allowed_extensions": ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
             "enable_preview": True,
             "enable_cache": True,
             "cache_duration": 300,
+            "max_download_size": 50,
+            "max_upload_size": 100,
             "backup_allowed_extensions": "",
             "backup_max_size": 0,
             "setup_completed": False,
@@ -72,10 +71,22 @@ class GlobalConfigManager:
         self.config_file = os.path.join(self.config_dir, "global_config.json")
         self.default_config = {
             "default_openlist_url": "",
+            "public_openlist_url": "",
+            "default_username": "",
+            "default_password": "",
+            "default_token": "",
+            "fixed_base_directory": "",
             "max_display_files": 20,
             "allowed_extensions": ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
             "enable_preview": True,
+            "enable_cache": True,
+            "cache_duration": 300,
+            "max_download_size": 50,
+            "max_upload_size": 100,
             "require_user_auth": True,
+            "autobackup_groups": [], # 启用自动备份的群号列表
+            "backup_allowed_extensions": "",
+            "backup_max_size": 0,
         }
 
     def load_config(self) -> Dict:

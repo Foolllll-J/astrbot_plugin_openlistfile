@@ -54,11 +54,65 @@ class OpenlistPlugin(Star):
             return self.config.get("global_settings", {}).get(key, default)
         return default
 
+    def get_global_config(self) -> Dict:
+        """获取整合后的全局配置（WebUI + global_config.json）"""
+        # 直接加载本地配置
+        config = self.global_config_manager.load_config()
+        
+        # 基础配置项映射：如果 WebUI 有值且本地是默认值，则使用 WebUI 的
+        mapping = {
+            "default_openlist_url": "openlist_url",
+            "public_openlist_url": "public_openlist_url",
+            "default_username": "username",
+            "default_password": "password",
+            "default_token": "token",
+            "fixed_base_directory": "fixed_base_directory",
+            "max_display_files": "max_display_files",
+            "allowed_extensions": "allowed_extensions",
+            "enable_preview": "enable_preview",
+            "enable_cache": "enable_cache",
+            "cache_duration": "cache_duration",
+            "max_download_size": "max_download_size",
+            "max_upload_size": "max_upload_size",
+            "require_user_auth": "require_user_auth",
+            "autobackup_groups": "autobackup_groups",
+            "backup_allowed_extensions": "backup_allowed_extensions",
+            "backup_max_size": "backup_max_size",
+        }
+        
+        for webui_key, local_key in mapping.items():
+            webui_val = self.get_webui_config(webui_key)
+            if webui_val is not None:
+                # 如果是列表（autobackup_groups），合并
+                if isinstance(webui_val, list) and local_key == "autobackup_groups":
+                    local_val = config.get(local_key, [])
+                    # 简单的去重合并
+                    combined = list(local_val)
+                    existing_gids = {item.split(":", 1)[0] for item in local_val if ":" in item}
+                    existing_gids.update({item for item in local_val if ":" not in item})
+                    for item in webui_val:
+                        gid = item.split(":", 1)[0] if ":" in item else item
+                        if gid not in existing_gids:
+                            combined.append(item)
+                    config[local_key] = combined
+                # 其他项，只有当本地配置是空/默认时才使用 WebUI
+                elif not config.get(local_key):
+                    config[local_key] = webui_val
+
+        # 统一将扩展名字符串转为列表
+        for key in ["allowed_extensions", "backup_allowed_extensions"]:
+            if isinstance(config.get(key), str):
+                config[key] = [ext.strip().lower() for ext in config[key].split(",") if ext.strip()]
+                config[key] = [ext if ext.startswith(".") else f".{ext}" for ext in config[key]]
+                
+        return config
+
     async def initialize(self):
         """插件初始化"""
         logger.info("Openlist文件管理插件已加载")
-        default_url = self.get_webui_config("default_openlist_url", "")
-        require_auth = self.get_webui_config("require_user_auth", True)
+        global_cfg = self.get_global_config()
+        default_url = global_cfg.get("openlist_url", "")
+        require_auth = global_cfg.get("require_user_auth", True)
         if not default_url and not require_auth:
             logger.warning("Openlist URL未配置，请使用 /ol config 命令配置或在WebUI中配置")
 
@@ -70,65 +124,20 @@ class OpenlistPlugin(Star):
 
     def get_user_config(self, user_id: str) -> Dict:
         """获取用户配置"""
-        require_user_auth = self.get_webui_config("require_user_auth", True)
-        
-        # 获取 WebUI/全局配置
-        global_cfg = {
-            "openlist_url": self.get_webui_config("default_openlist_url", ""),
-            "public_openlist_url": self.get_webui_config("public_openlist_url", ""),
-            "username": self.get_webui_config("default_username", ""),
-            "password": self.get_webui_config("default_password", ""),
-            "token": self.get_webui_config("default_token", ""),
-            "fixed_base_directory": self.get_webui_config("fixed_base_directory", ""),
-            "max_display_files": self.get_webui_config("max_display_files", 20),
-            "allowed_extensions": self.get_webui_config(
-                "allowed_extensions",
-                ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
-            ),
-            "enable_preview": self.get_webui_config("enable_preview", True),
-            "backup_allowed_extensions": self.get_webui_config("backup_allowed_extensions", ""),
-            "backup_max_size": self.get_webui_config("backup_max_size", 0),
-        }
-
-        if require_user_auth:
-            user_manager = self.get_user_config_manager(user_id)
-            user_config = user_manager.load_config()
-            
-            # 合并逻辑：优先使用用户配置，如果用户配置为空则使用全局配置
-            merged_config = user_config.copy()
-            
-            # 基础连接信息
-            for key in ["openlist_url", "username", "password", "token", "public_openlist_url", "fixed_base_directory"]:
-                if not merged_config.get(key) and global_cfg.get(key):
-                    merged_config[key] = global_cfg[key]
-            
-            for key in ["max_display_files", "allowed_extensions", "enable_preview", "enable_cache", "cache_duration", "backup_allowed_extensions", "backup_max_size"]:
-                # 如果用户没改过（还是默认值）且全局有配置，则同步全局配置
-                if key in ["allowed_extensions", "backup_allowed_extensions"]:
-                    # 扩展名特殊处理：转为列表
-                    if isinstance(merged_config.get(key), str):
-                        merged_config[key] = [ext.strip() for ext in merged_config[key].split(",") if ext.strip()]
-                    elif not merged_config.get(key):
-                        val = global_cfg.get(key, "")
-                        merged_config[key] = [ext.strip() for ext in val.split(",") if ext.strip()] if isinstance(val, str) else val
-                else:
-                    if key not in merged_config and key in global_cfg:
-                        merged_config[key] = global_cfg[key]
-            
-            # 确保扩展名列表始终是列表且转为小写
-            for key in ["allowed_extensions", "backup_allowed_extensions"]:
-                if isinstance(merged_config.get(key), str):
-                    merged_config[key] = [ext.strip().lower() for ext in merged_config[key].split(",") if ext.strip()]
-                elif isinstance(merged_config.get(key), list):
-                    merged_config[key] = [str(ext).strip().lower() for ext in merged_config[key]]
-
-            return merged_config
-        else:
-            # 未启用用户认证时直接使用全局配置
-            for key in ["allowed_extensions", "backup_allowed_extensions"]:
-                if isinstance(global_cfg.get(key), str):
-                    global_cfg[key] = [ext.strip().lower() for ext in global_cfg[key].split(",") if ext.strip()]
+        global_cfg = self.get_global_config()
+        if not global_cfg.get("require_user_auth", True):
             return global_cfg
+            
+        user_config = self.get_user_config_manager(user_id).load_config()
+        
+        # 简单的合并：用户配置优先，如果用户配置为空则使用全局配置
+        final_cfg = global_cfg.copy()
+        for k, v in user_config.items():
+            # 只要用户设置了非空且非默认值，就覆盖全局
+            if v and v != self.get_user_config_manager(user_id).default_config.get(k):
+                final_cfg[k] = v
+                
+        return final_cfg
 
     def _validate_config(self, user_config: Dict) -> bool:
         """验证配置是否有效"""
@@ -276,7 +285,7 @@ class OpenlistPlugin(Star):
         user_id = event.get_sender_id()
         file_name = file_item.get("name", "")
         file_size = file_item.get("size", 0)
-        max_download_size_mb = self.get_webui_config("max_download_size", 50)
+        max_download_size_mb = user_config.get("max_download_size", 50)
         max_download_size = max_download_size_mb * 1024 * 1024
         if file_size > max_download_size:
             size_mb = file_size / (1024 * 1024)
@@ -378,6 +387,129 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 获取下载链接失败: {e}, 路径: {file_path}, 文件名: {item.get('name', '')}", exc_info=True)
             yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
+    async def handle_group_file_upload(self, event: AstrMessageEvent):
+        """处理群文件上传事件（自动备份，参考 Filechecker 移植解析逻辑）"""
+        raw_event_data = event.message_obj.raw_message
+        message_list = raw_event_data.get("message")
+        if not isinstance(message_list, list):
+            return
+        
+        # 遍历消息段寻找文件段
+        for segment_dict in message_list:
+            if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
+                data_dict = segment_dict.get("data", {})
+                file_name = data_dict.get("file")
+                file_id = data_dict.get("file_id")
+                file_size = data_dict.get("file_size")
+                
+                if not file_name or not file_id:
+                    continue
+                
+                # 转换文件大小
+                if isinstance(file_size, str):
+                    try:
+                        file_size = int(file_size)
+                    except ValueError:
+                        file_size = None
+                
+                # 命中文件，开始执行自动备份检查
+                group_id = str(event.message_obj.group_id)
+                if not group_id:
+                    return
+                
+                global_cfg = self.get_global_config()
+                autobackup_groups = global_cfg.get("autobackup_groups", [])
+                
+                target_path = None
+                for item in autobackup_groups:
+                    if ":" in item:
+                        gid, path = item.split(":", 1)
+                        if gid == group_id:
+                            target_path = path
+                            break
+                    elif item == group_id:
+                        target_path = f"/backup/group_{group_id}"
+                        break
+                
+                if not target_path:
+                    return
+                
+                user_id = event.get_sender_id()
+                user_config = self.get_user_config(user_id)
+                
+                # 如果用户未配置 Openlist 地址，则使用全局配置中的备份相关参数
+                if not self._validate_config(user_config):
+                    user_config = global_cfg
+                
+                if not self._validate_config(user_config):
+                    logger.warning(f"⚠️ [自动备份] 群 {group_id} 触发了自动备份，但未找到有效的 Openlist 配置。")
+                    return
+                
+                # 预先检查大小限制 (从事件数据获取)
+                if file_size is not None:
+                    max_size_mb = user_config.get("backup_max_size", 0)
+                    if max_size_mb > 0 and file_size > (max_size_mb * 1024 * 1024):
+                        logger.info(f"⏭️ [自动备份] 文件 {file_name} 超过限制 {max_size_mb}MB (事件报送大小: {file_size})，跳过。")
+                        return
+
+                # 获取对应的 File 组件
+                file_component = None
+                for msg in event.get_messages():
+                    if isinstance(msg, File):
+                        file_component = msg
+                        break
+                
+                if not file_component:
+                    return
+                
+                # 使用配置中的备份过滤条件
+                allowed_exts = user_config.get("backup_allowed_extensions", [])
+                if allowed_exts:
+                    ext = os.path.splitext(file_name.lower())[1]
+                    if ext not in allowed_exts:
+                        logger.info(f"⏭️ [自动备份] 文件 {file_name} 后缀 {ext} 不在允许范围内，跳过。")
+                        return
+                
+                try:
+                    file_path = await file_component.get_file()
+                    if not file_path or not os.path.exists(file_path):
+                        logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
+                        return
+                    
+                    # 再次确认实际下载的文件大小
+                    actual_size = os.path.getsize(file_path)
+                    max_size_mb = user_config.get("backup_max_size", 0)
+                    if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
+                        logger.info(f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。")
+                        if os.path.exists(file_path): os.remove(file_path)
+                        return
+                    
+                    logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
+                    async with OpenlistClient(
+                        user_config["openlist_url"], 
+                        user_config.get("public_openlist_url", ""), 
+                        user_config.get("username", ""), 
+                        user_config.get("password", ""), 
+                        user_config.get("token", ""), 
+                        user_config.get("fixed_base_directory", "")
+                    ) as client:
+                        await client.mkdir(target_path)
+                        success = await client.upload_file(file_path, target_path, file_name)
+                        if success:
+                            logger.info(f"✅ [自动备份] 文件 {file_name} 上传成功。")
+                        else:
+                            logger.error(f"❌ [自动备份] 文件 {file_name} 上传失败。")
+                    
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    
+                except Exception as e:
+                    logger.error(f"❌ [自动备份] 处理文件 {file_name} 出错: {e}", exc_info=True)
+                
+                break # 已经处理了文件，跳出循环
+
+
     async def _upload_file(self, event: AstrMessageEvent, file_component: File, user_config: Dict):
         user_id = event.get_sender_id()
         upload_state = self._get_user_upload_state(user_id)
@@ -406,7 +538,7 @@ class OpenlistPlugin(Star):
                 return
 
             file_size = os.path.getsize(file_path)
-            max_upload_size_mb = self.get_webui_config("max_upload_size", 100)
+            max_upload_size_mb = user_config.get("max_upload_size", 100)
             max_upload_size = max_upload_size_mb * 1024 * 1024
             if file_size > max_upload_size:
                 size_mb = file_size / (1024 * 1024)
@@ -468,13 +600,17 @@ class OpenlistPlugin(Star):
     async def _backup_group_files(self, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict):
         """执行群文件备份"""
         bot = event.bot
-        user_id = event.get_sender_id()
-        
-        yield event.plain_result(f"🔍 正在扫描群 {group_id} 的所有文件，请稍候...")
+        return await self._do_backup_logic(bot, event, group_id, target_path, user_config)
+
+    async def _do_backup_logic(self, bot, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict, is_auto: bool = False):
+        """核心备份逻辑，支持手动和自动备份"""
+        if not is_auto:
+            yield event.plain_result(f"🔍 正在扫描群 {group_id} 的所有文件，请稍候...")
         
         all_items = await self._get_group_files_recursive(bot, group_id)
         if not all_items:
-            yield event.plain_result("❌ 未找到任何群文件或获取失败。")
+            if not is_auto:
+                yield event.plain_result("❌ 未找到任何群文件或获取失败。")
             return
             
         allowed_exts = user_config.get("backup_allowed_extensions", [])
@@ -497,11 +633,15 @@ class OpenlistPlugin(Star):
             filtered_items.append(item)
             
         if not filtered_items:
-            yield event.plain_result("⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。")
+            if not is_auto:
+                yield event.plain_result("⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。")
             return
             
         total = len(filtered_items)
-        yield event.plain_result(f"📦 扫描完成，共发现 {total} 个文件需要备份。\n🚀 开始备份到 Openlist: {target_path}")
+        if not is_auto:
+            yield event.plain_result(f"📦 扫描完成，共发现 {total} 个文件需要备份。\n🚀 开始备份到 Openlist: {target_path}")
+        else:
+            logger.info(f"🚀 [自动备份] 发现 {total} 个新文件，准备备份到群 {group_id} 的目标路径: {target_path}")
         
         success_count = 0
         fail_count = 0
@@ -571,7 +711,10 @@ class OpenlistPlugin(Star):
                 await asyncio.gather(*batch_tasks)
                 logger.info(f"⏳ 备份进度: {min(i+batch_size, total)}/{total} (成功: {success_count}, 失败: {fail_count})")
                 
-        yield event.plain_result(f"✅ 备份任务结束!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n📂 目标: {target_path}")
+        if not is_auto:
+            yield event.plain_result(f"✅ 备份任务结束!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n📂 目标: {target_path}")
+        else:
+            logger.info(f"✅ [自动备份] 任务结束。群 {group_id}: 成功 {success_count}, 失败 {fail_count}")
 
     async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
         """上传图片到Openlist"""
@@ -591,7 +734,7 @@ class OpenlistPlugin(Star):
                 ext = ".jpg"
             filename = f"image_{timestamp}{ext}"
             file_size = os.path.getsize(image_path)
-            max_upload_size_mb = self.get_webui_config("max_upload_size", 100)
+            max_upload_size_mb = user_config.get("max_upload_size", 100)
             max_upload_size = max_upload_size_mb * 1024 * 1024
             if file_size > max_upload_size:
                 size_mb = file_size / (1024 * 1024)
@@ -633,8 +776,9 @@ class OpenlistPlugin(Star):
             if safe_config.get("token"): safe_config["token"] = "***"
             for k, v in safe_config.items():
                 if k != "setup_completed": config_text += f"🔹 {k}: {v}\n"
-            require_auth = self.get_webui_config("require_user_auth", True)
-            default_url = self.get_webui_config("default_openlist_url", "")
+            global_cfg = self.get_global_config()
+            require_auth = global_cfg.get("require_user_auth", True)
+            default_url = global_cfg.get("openlist_url", "")
             if require_auth:
                 config_text += f"\n💡 提示: 当前启用了用户独立配置模式"
                 if default_url: config_text += f"\n🌐 默认服务器: {default_url}"
@@ -962,7 +1106,7 @@ class OpenlistPlugin(Star):
                 if result is not None:
                     files = result.get("content", [])
                     nav_state["current_path"] = previous_path
-                    nav_state["items"] = files[: self.get_webui_config("max_display_files", 20)]
+                    nav_state["items"] = files
                     formatted_list = self._format_file_list(files, previous_path, user_config, user_id)
                     yield event.plain_result(f"⬅️ 已返回上级目录\n\n{formatted_list}")
                 else:
@@ -1042,38 +1186,108 @@ class OpenlistPlugin(Star):
                 yield result
 
     @openlist_group.command("backup")
-    async def backup_command(self, event: AstrMessageEvent, target_path: str = "/", group_id: str = ""):
-        """群文件备份到 Openlist"""
+    async def backup_command(self, event: AstrMessageEvent, arg1: str = None, arg2: str = None):
+        """群文件备份到 Openlist。用法: /ol backup [@群号] [/路径]"""
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
             
-        # 确定目标群号
+        target_path = "/"
         target_group_id = 0
-        if group_id:
-            if group_id.startswith("@"):
-                group_id = group_id[1:]
-            if group_id.isdigit():
-                target_group_id = int(group_id)
         
+        # 1. 智能解析参数
+        for arg in [arg1, arg2]:
+            if not arg: continue
+            if arg.startswith("/"):
+                target_path = arg
+            elif arg.startswith("@"):
+                try:
+                    target_group_id = int(arg[1:])
+                except ValueError:
+                    yield event.plain_result(f"❌ 无效的群号格式: {arg}")
+                    return
+            else:
+                yield event.plain_result(f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。")
+                return
+        
+        # 2. 确定群号 (手动指定优先，否则用当前群)
         if not target_group_id:
             if event.message_obj.group_id:
-                target_group_id = event.message_obj.group_id
+                target_group_id = int(event.message_obj.group_id)
             else:
-                yield event.plain_result("❌ 请在群聊中使用此命令，或在命令后加上群号，例如: /ol backup /备份 @123456")
+                yield event.plain_result("❌ 请指定群号（以 @ 开头）或在群聊中使用。")
                 return
                 
         async for result in self._backup_group_files(event, target_group_id, target_path, user_config):
             yield result
+
+    @openlist_group.command("autobackup", alias="自动备份")
+    async def autobackup_command(self, event: AstrMessageEvent, action: str, arg1: str = None, arg2: str = None):
+        """配置自动备份。用法: /ol autobackup enable|disable [@群号] [/路径]"""
+        global_cfg = self.get_global_config()
+        if not global_cfg.get("require_user_auth", True) and event.message_obj.sender.role < 5:
+            yield event.plain_result("❌ 权限不足。")
+            return
+        
+        target_gid = None
+        target_path = None
+        
+        # 1. 智能解析参数: 路径必须以 / 开头，群号必须以 @ 开头
+        for arg in [arg1, arg2]:
+            if not arg: continue
+            if arg.startswith("/"):
+                target_path = arg
+            elif arg.startswith("@"):
+                target_gid = arg[1:]
+            else:
+                yield event.plain_result(f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。")
+                return
+        
+        # 2. 确定群号 (手动指定优先，否则用当前群)
+        if not target_gid:
+            if event.message_obj.group_id:
+                target_gid = str(event.message_obj.group_id)
+            else:
+                yield event.plain_result("❌ 请指定群号（以 @ 开头）或在群聊中使用。")
+                return
+
+        local_cfg = self.global_config_manager.load_config()
+        groups = local_cfg.get("autobackup_groups", [])
+        
+        if action == "enable":
+            # enable 必须有路径，没有则用默认
+            if not target_path:
+                target_path = f"/backup/group_{target_gid}"
+                
+            new_entry = f"{target_gid}:{target_path}"
+            # 过滤掉旧的该群配置
+            new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]
+            new_groups.append(new_entry)
+            local_cfg["autobackup_groups"] = new_groups
+            self.global_config_manager.save_config(local_cfg)
+            yield event.plain_result(f"✅ 群 {target_gid} 自动备份已开启 -> {target_path}")
+            
+        elif action == "disable":
+            # disable 只需要群号，忽略路径
+            new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]
+            if len(new_groups) < len(groups):
+                local_cfg["autobackup_groups"] = new_groups
+                self.global_config_manager.save_config(local_cfg)
+                yield event.plain_result(f"✅ 群 {target_gid} 自动备份已禁用。")
+            else:
+                yield event.plain_result(f"💡 群 {target_gid} 当前未开启自动备份。")
+        else:
+            yield event.plain_result("❌ 未知操作。请使用 enable 或 disable。")
 
     @openlist_group.command("help")
     async def help_command(self, event: AstrMessageEvent):
         """显示全面且更新的帮助信息"""
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
-        is_user_auth_mode = self.get_webui_config("require_user_auth", True)
+        global_cfg = self.get_global_config()
+        is_user_auth_mode = global_cfg.get("require_user_auth", True)
 
         help_text = f"""📚 Openlist 文件管理插件 帮助
 
@@ -1115,10 +1329,17 @@ class OpenlistPlugin(Star):
    - `/ol upload cancel`: 取消上传。
    - `使用`: 开启后，直接向机器人发送文件或图片即可。
 
-📦 `/ol backup [目标路径] [@群号]`
+📦 `/ol backup [/目标路径] [@群号]`
    - 将指定群聊的所有文件递归备份到 Openlist。
    - 示例: `/ol backup /群备份 @123456`
-   - 提示: 默认备份当前群聊，备份过程中会自动创建对应的文件夹结构。
+   - 提示: 路径须以 `/` 开头，群号须以 `@` 开头。默认备份当前群到根目录。
+
+🔄 `/ol autobackup <enable|disable> [@群号] [/路径]`
+   - 配置群文件自动备份（新上传文件自动同步）。
+   - 示例: `/ol autobackup enable` (开启当前群备份到默认路径)
+   - 示例: `/ol autobackup enable @123456 /backup` (指定群号和路径)
+   - 示例: `/ol autobackup disable @123456` (禁用指定群的自动备份)
+   - 提示: 禁用时无需提供路径。路径须以 `/` 开头，群号须以 `@` 开头。
 
 ---
 插件配置指令

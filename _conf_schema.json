@@ -90,6 +90,12 @@
                 "default": true,
                 "hint": "启用后每个用户需要独立配置"
             },
+            "autobackup_groups": {
+                "description": "启用自动备份的群组",
+                "type": "list",
+                "default": [],
+                "hint": "启用自动备份的群号列表。格式支持：'群号' 或 '群号:/路径'。未指定路径则默认为 /backup/group_{群号}"
+            },
             "backup_allowed_extensions": {
                 "description": "备份允许的文件扩展名",
                 "type": "text",
