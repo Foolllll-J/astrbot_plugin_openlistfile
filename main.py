@@ -86,6 +86,8 @@ class OpenlistPlugin(Star):
                 ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
             ),
             "enable_preview": self.get_webui_config("enable_preview", True),
+            "backup_allowed_extensions": self.get_webui_config("backup_allowed_extensions", ""),
+            "backup_max_size": self.get_webui_config("backup_max_size", 0),
         }
 
         if require_user_auth:
@@ -100,31 +102,32 @@ class OpenlistPlugin(Star):
                 if not merged_config.get(key) and global_cfg.get(key):
                     merged_config[key] = global_cfg[key]
             
-            # 其他设置（如果用户配置中存在且不是默认值，则保留用户值；否则同步全局值）
-            # 注意：UserConfigManager.default_config 中定义了这些项的初始值
-            for key in ["max_display_files", "allowed_extensions", "enable_preview", "enable_cache", "cache_duration"]:
+            for key in ["max_display_files", "allowed_extensions", "enable_preview", "enable_cache", "cache_duration", "backup_allowed_extensions", "backup_max_size"]:
                 # 如果用户没改过（还是默认值）且全局有配置，则同步全局配置
-                if key == "allowed_extensions":
+                if key in ["allowed_extensions", "backup_allowed_extensions"]:
                     # 扩展名特殊处理：转为列表
                     if isinstance(merged_config.get(key), str):
-                        merged_config[key] = merged_config[key].split(",")
+                        merged_config[key] = [ext.strip() for ext in merged_config[key].split(",") if ext.strip()]
                     elif not merged_config.get(key):
-                        merged_config[key] = global_cfg[key].split(",") if isinstance(global_cfg[key], str) else global_cfg[key]
+                        val = global_cfg.get(key, "")
+                        merged_config[key] = [ext.strip() for ext in val.split(",") if ext.strip()] if isinstance(val, str) else val
                 else:
-                    # 对于数值和布尔值，如果用户配置里没有或者我们认为需要同步全局，则合并
-                    # 这里简单处理：如果用户配置里有，就用用户的。
                     if key not in merged_config and key in global_cfg:
                         merged_config[key] = global_cfg[key]
             
-            # 确保 allowed_extensions 始终是列表
-            if isinstance(merged_config.get("allowed_extensions"), str):
-                merged_config["allowed_extensions"] = merged_config["allowed_extensions"].split(",")
+            # 确保扩展名列表始终是列表且转为小写
+            for key in ["allowed_extensions", "backup_allowed_extensions"]:
+                if isinstance(merged_config.get(key), str):
+                    merged_config[key] = [ext.strip().lower() for ext in merged_config[key].split(",") if ext.strip()]
+                elif isinstance(merged_config.get(key), list):
+                    merged_config[key] = [str(ext).strip().lower() for ext in merged_config[key]]
 
             return merged_config
         else:
             # 未启用用户认证时直接使用全局配置
-            if isinstance(global_cfg["allowed_extensions"], str):
-                global_cfg["allowed_extensions"] = global_cfg["allowed_extensions"].split(",")
+            for key in ["allowed_extensions", "backup_allowed_extensions"]:
+                if isinstance(global_cfg.get(key), str):
+                    global_cfg[key] = [ext.strip().lower() for ext in global_cfg[key].split(",") if ext.strip()]
             return global_cfg
 
     def _validate_config(self, user_config: Dict) -> bool:
@@ -429,6 +432,147 @@ class OpenlistPlugin(Star):
             yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
             self._set_user_upload_waiting(user_id, False)
 
+    async def _get_group_files_recursive(self, bot, group_id: int, folder_id: str = "/", current_path: str = "") -> List[Dict]:
+        """递归获取群文件列表"""
+        all_files = []
+        try:
+            if folder_id == "/":
+                res = await bot.api.call_action("get_group_root_files", group_id=group_id)
+            else:
+                res = await bot.api.call_action("get_group_files_by_folder", group_id=group_id, folder_id=folder_id)
+            
+            if not res:
+                return []
+            
+            files = res.get("files", [])
+            folders = res.get("folders", [])
+            
+            for f in files:
+                f["relative_path"] = f"{current_path}/{f['file_name']}".lstrip("/")
+                all_files.append(f)
+                
+            for folder in folders:
+                sub_folder_id = folder.get("folder_id")
+                sub_folder_name = folder.get("folder_name")
+                if sub_folder_id:
+                    sub_files = await self._get_group_files_recursive(
+                        bot, group_id, sub_folder_id, f"{current_path}/{sub_folder_name}"
+                    )
+                    all_files.extend(sub_files)
+                    
+            return all_files
+        except Exception as e:
+            logger.error(f"递归获取群 {group_id} 文件失败: {e}", exc_info=True)
+            return all_files
+
+    async def _backup_group_files(self, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict):
+        """执行群文件备份"""
+        bot = event.bot
+        user_id = event.get_sender_id()
+        
+        yield event.plain_result(f"🔍 正在扫描群 {group_id} 的所有文件，请稍候...")
+        
+        all_items = await self._get_group_files_recursive(bot, group_id)
+        if not all_items:
+            yield event.plain_result("❌ 未找到任何群文件或获取失败。")
+            return
+            
+        allowed_exts = user_config.get("backup_allowed_extensions", [])
+        max_size_mb = user_config.get("backup_max_size", 0)
+        max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
+        
+        filtered_items = []
+        for item in all_items:
+            name = item.get("file_name", "").lower()
+            size = item.get("file_size", 0)
+            
+            if allowed_exts:
+                ext = os.path.splitext(name)[1]
+                if ext not in allowed_exts:
+                    continue
+            
+            if max_size > 0 and size > max_size:
+                continue
+                
+            filtered_items.append(item)
+            
+        if not filtered_items:
+            yield event.plain_result("⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。")
+            return
+            
+        total = len(filtered_items)
+        yield event.plain_result(f"📦 扫描完成，共发现 {total} 个文件需要备份。\n🚀 开始备份到 Openlist: {target_path}")
+        
+        success_count = 0
+        fail_count = 0
+        
+        temp_dir = os.path.join(StarTools.get_data_dir("openlist"), "temp_backup")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        async with OpenlistClient(
+            user_config["openlist_url"], 
+            user_config.get("public_openlist_url", ""), 
+            user_config.get("username", ""), 
+            user_config.get("password", ""), 
+            user_config.get("token", ""), 
+            user_config.get("fixed_base_directory", "")
+        ) as client:
+            semaphore = asyncio.Semaphore(3)
+            
+            async def upload_task(item, idx):
+                nonlocal success_count, fail_count
+                async with semaphore:
+                    file_id = item.get("file_id")
+                    file_name = item.get("file_name")
+                    rel_path = item.get("relative_path")
+                    file_dir = os.path.dirname(rel_path)
+                    target_dir = f"{target_path.rstrip('/')}/{file_dir}".rstrip("/")
+                    
+                    try:
+                        if file_dir:
+                            parts = file_dir.split("/")
+                            curr = target_path.rstrip("/")
+                            for p in parts:
+                                curr = f"{curr}/{p}"
+                                await client.mkdir(curr)
+                        else:
+                            await client.mkdir(target_path)
+                            
+                        url_res = await bot.api.call_action("get_group_file_url", group_id=group_id, file_id=file_id, busid=item.get("busid", 0))
+                        download_url = url_res.get("url")
+                        if not download_url:
+                            fail_count += 1
+                            return
+                            
+                        local_path = os.path.join(temp_dir, f"{int(time.time())}_{file_id}_{file_name}")
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(download_url) as resp:
+                                if resp.status == 200:
+                                    with open(local_path, "wb") as f:
+                                        f.write(await resp.read())
+                                    
+                                    up_res = await client.upload_file(local_path, target_dir, file_name)
+                                    if up_res:
+                                        success_count += 1
+                                    else:
+                                        fail_count += 1
+                                    
+                                    if os.path.exists(local_path):
+                                        os.remove(local_path)
+                                else:
+                                    fail_count += 1
+                    except Exception as e:
+                        logger.error(f"备份文件 {file_name} 失败: {e}")
+                        fail_count += 1
+            
+            batch_size = 5
+            for i in range(0, total, batch_size):
+                batch_tasks = [upload_task(item, j) for j, item in enumerate(filtered_items[i:i+batch_size], start=i)]
+                await asyncio.gather(*batch_tasks)
+                logger.info(f"⏳ 备份进度: {min(i+batch_size, total)}/{total} (成功: {success_count}, 失败: {fail_count})")
+                
+        yield event.plain_result(f"✅ 备份任务结束!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n📂 目标: {target_path}")
+
     async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
         """上传图片到Openlist"""
         user_id = event.get_sender_id()
@@ -534,13 +678,13 @@ class OpenlistPlugin(Star):
                 "openlist_url", "username", "password", "token", 
                 "max_display_files", "public_openlist_url", 
                 "fixed_base_directory", "allowed_extensions", "enable_preview",
-                "enable_cache", "cache_duration"
+                "enable_cache", "cache_duration", "backup_allowed_extensions", "backup_max_size"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
             
-            if key in ["max_display_files", "cache_duration"]:
+            if key in ["max_display_files", "cache_duration", "backup_max_size"]:
                 try:
                     value = int(value)
                     if key == "max_display_files" and (value < 1 or value > 100):
@@ -549,15 +693,20 @@ class OpenlistPlugin(Star):
                     if key == "cache_duration" and (value < 1):
                         yield event.plain_result("❌ cache_duration 必须大于0")
                         return
+                    if key == "backup_max_size" and (value < 0):
+                        yield event.plain_result("❌ backup_max_size 必须大于等于0")
+                        return
                 except ValueError:
                     yield event.plain_result(f"❌ {key} 必须是数字")
                     return
             elif key in ["enable_preview", "enable_cache"]:
                 value = value.lower() in ["true", "1", "yes", "on"]
-            elif key == "allowed_extensions":
+            elif key in ["allowed_extensions", "backup_allowed_extensions"]:
                 # 允许输入逗号分隔的字符串，存为列表
                 if isinstance(value, str):
-                    value = [ext.strip() for ext in value.split(",") if ext.strip()]
+                    value = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
+                    # 确保后缀带点
+                    value = [ext if ext.startswith(".") else f".{ext}" for ext in value]
             
             user_config[key] = value
             if key == "openlist_url" and value:
@@ -892,6 +1041,33 @@ class OpenlistPlugin(Star):
             async for result in self._upload_file(event, file_component, user_config):
                 yield result
 
+    @openlist_group.command("backup")
+    async def backup_command(self, event: AstrMessageEvent, target_path: str = "/", group_id: str = ""):
+        """群文件备份到 Openlist"""
+        user_id = event.get_sender_id()
+        user_config = self.get_user_config(user_id)
+        if not self._validate_config(user_config):
+            yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+            return
+            
+        # 确定目标群号
+        target_group_id = 0
+        if group_id:
+            if group_id.startswith("@"):
+                group_id = group_id[1:]
+            if group_id.isdigit():
+                target_group_id = int(group_id)
+        
+        if not target_group_id:
+            if event.message_obj.group_id:
+                target_group_id = event.message_obj.group_id
+            else:
+                yield event.plain_result("❌ 请在群聊中使用此命令，或在命令后加上群号，例如: /ol backup /备份 @123456")
+                return
+                
+        async for result in self._backup_group_files(event, target_group_id, target_path, user_config):
+            yield result
+
     @openlist_group.command("help")
     async def help_command(self, event: AstrMessageEvent):
         """显示全面且更新的帮助信息"""
@@ -938,6 +1114,11 @@ class OpenlistPlugin(Star):
    - `/ol upload`: 在当前目录开启上传模式。
    - `/ol upload cancel`: 取消上传。
    - `使用`: 开启后，直接向机器人发送文件或图片即可。
+
+📦 `/ol backup [目标路径] [@群号]`
+   - 将指定群聊的所有文件递归备份到 Openlist。
+   - 示例: `/ol backup /群备份 @123456`
+   - 提示: 默认备份当前群聊，备份过程中会自动创建对应的文件夹结构。
 
 ---
 插件配置指令

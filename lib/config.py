@@ -30,6 +30,8 @@ class UserConfigManager:
             "enable_preview": True,
             "enable_cache": True,
             "cache_duration": 300,
+            "backup_allowed_extensions": "",
+            "backup_max_size": 0,
             "setup_completed": False,
         }
 

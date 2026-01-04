@@ -216,3 +216,33 @@ class OpenlistClient:
         except Exception as e:
             logger.error(f"上传文件失败: {e}, 文件路径: {file_path}, 目标路径: {target_path}/{filename}", exc_info=True)
             return False
+
+    async def mkdir(self, path: str) -> bool:
+        """在Openlist创建目录"""
+        try:
+            headers = {}
+            if self.token:
+                headers["Authorization"] = self.token
+
+            mkdir_data = {"path": path}
+
+            async with self.session.post(
+                f"{self.base_url}/api/fs/mkdir", json=mkdir_data, headers=headers
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    if result.get("code") == 200:
+                        return True
+                    else:
+                        # 405 可能表示目录已存在，通常也视为成功
+                        if result.get("code") == 405:
+                            return True
+                        logger.error(f"创建目录失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        return False
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"创建目录失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    return False
+        except Exception as e:
+            logger.error(f"创建目录失败: {e}, 路径: {path}", exc_info=True)
+            return False

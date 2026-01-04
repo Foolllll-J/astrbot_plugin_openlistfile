@@ -89,6 +89,18 @@
                 "type": "bool",
                 "default": true,
                 "hint": "启用后每个用户需要独立配置"
+            },
+            "backup_allowed_extensions": {
+                "description": "备份允许的文件扩展名",
+                "type": "text",
+                "default": "",
+                "hint": "用逗号分隔，如: .txt,.pdf。留空表示不限制。"
+            },
+            "backup_max_size": {
+                "description": "备份单个文件大小上限(MB)",
+                "type": "int",
+                "default": 0,
+                "hint": "0 表示不限制。"
             }
         }
     }
