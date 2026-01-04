@@ -4,6 +4,7 @@ import os
 import hashlib
 import time
 import tempfile
+import chardet
 from typing import List, Dict, Optional
 from urllib.parse import urljoin, quote, urlparse
 import aiohttp
@@ -69,7 +70,8 @@ class OpenlistPlugin(Star):
             "fixed_base_directory": "fixed_base_directory",
             "max_display_files": "max_display_files",
             "allowed_extensions": "allowed_extensions",
-            "enable_preview": "enable_preview",
+            "max_preview_size": "max_preview_size",
+            "text_preview_length": "text_preview_length",
             "enable_cache": "enable_cache",
             "cache_duration": "cache_duration",
             "max_download_size": "max_download_size",
@@ -821,14 +823,14 @@ class OpenlistPlugin(Star):
             valid_keys = [
                 "openlist_url", "username", "password", "token", 
                 "max_display_files", "public_openlist_url", 
-                "fixed_base_directory", "allowed_extensions", "enable_preview",
-                "enable_cache", "cache_duration", "backup_allowed_extensions", "backup_max_size"
+                "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
+                "enable_cache", "cache_duration", "max_download_size","backup_allowed_extensions", "backup_max_size"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
             
-            if key in ["max_display_files", "cache_duration", "backup_max_size"]:
+            if key in ["max_display_files", "cache_duration", "backup_max_size", "max_preview_size", "text_preview_length"]:
                 try:
                     value = int(value)
                     if key == "max_display_files" and (value < 1 or value > 100):
@@ -840,10 +842,16 @@ class OpenlistPlugin(Star):
                     if key == "backup_max_size" and (value < 0):
                         yield event.plain_result("❌ backup_max_size 必须大于等于0")
                         return
+                    if key == "max_preview_size" and (value < -1):
+                        yield event.plain_result("❌ max_preview_size 必须大于等于 -1 (-1表示禁用, 0表示不限制)")
+                        return
+                    if key == "text_preview_length" and (value < 1):
+                        yield event.plain_result("❌ text_preview_length 必须大于0")
+                        return
                 except ValueError:
                     yield event.plain_result(f"❌ {key} 必须是数字")
                     return
-            elif key in ["enable_preview", "enable_cache"]:
+            elif key in ["enable_cache"]:
                 value = value.lower() in ["true", "1", "yes", "on"]
             elif key in ["allowed_extensions", "backup_allowed_extensions"]:
                 # 允许输入逗号分隔的字符串，存为列表
@@ -1474,6 +1482,155 @@ class OpenlistPlugin(Star):
             logger.error(f"恢复任务失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 恢复失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
+    @openlist_group.command("preview", alias=["预览"])
+    async def preview_command(self, event: AstrMessageEvent, path: str):
+        """预览文件内容"""
+        user_id = event.get_sender_id()
+        user_config = self.get_user_config(user_id)
+        
+        # 检查配置
+        max_preview_size_mb = user_config.get("max_preview_size", 0)
+        if max_preview_size_mb == -1:
+            yield event.plain_result("❌ 预览功能已禁用。")
+            return
+
+        if not self._validate_config(user_config):
+            yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+            return
+
+        # 获取文件信息
+        item = None
+        path_or_num = path
+        if path_or_num.isdigit():
+            number = int(path_or_num)
+            item = self._get_item_by_number(user_id, number)
+            if item:
+                if item.get("is_dir"):
+                    yield event.plain_result("❌ 无法预览目录，请指定一个文件。")
+                    return
+                nav_state = self._get_user_navigation_state(user_id)
+                current_path = nav_state["current_path"]
+                full_path = f"{current_path.rstrip('/')}/{item['name']}"
+            else:
+                yield event.plain_result(f"❌ 序号 {number} 无效")
+                return
+        else:
+            full_path = path_or_num
+        
+        try:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                if not item:
+                    item = await client.get_file_info(full_path)
+                    if not item:
+                        yield event.plain_result(f"❌ 未找到文件: {full_path}")
+                        return
+                    if item.get("is_dir"):
+                        yield event.plain_result("❌ 无法预览目录，请指定一个文件。")
+                        return
+
+                file_name = item.get("name", "")
+                file_size = item.get("size", 0)
+                ext = os.path.splitext(file_name)[1].lower()
+                
+                # 压缩包预览支持 (使用 API)
+                archive_extensions = [".zip", ".tar", ".gz", ".7z", ".rar", ".bz2", ".xz"]
+                if ext in archive_extensions:
+                    yield event.plain_result(f"🔍 正在读取压缩包内容: {file_name}...")
+                    archive_data = await client.list_archive_contents(full_path)
+                    if archive_data and "content" in archive_data:
+                        contents = archive_data["content"]
+                        if not contents:
+                            yield event.plain_result(f"📦 压缩包 {file_name} 为空。")
+                            return
+                        
+                        file_list = []
+                        for f in contents:
+                            prefix = "📁" if f.get("is_dir") else "📄"
+                            size_str = f" ({f['size'] / 1024:.1f} KB)" if not f.get("is_dir") else ""
+                            file_list.append(f"{prefix} {f['name']}{size_str}")
+                        
+                        max_display = 20
+                        display_list = file_list[:max_display]
+                        result_text = f"📦 压缩包预览: {file_name}\n---\n" + "\n".join(display_list)
+                        if len(file_list) > max_display:
+                            result_text += f"\n\n...(及其他 {len(file_list) - max_display} 个文件)"
+                        
+                        yield event.plain_result(result_text)
+                        return
+                    else:
+                        yield event.plain_result(f"❌ 无法读取压缩包内容或该格式暂不支持。")
+                        return
+
+                # 检查文件大小限制
+                if max_preview_size_mb > 0:
+                    if file_size > max_preview_size_mb * 1024 * 1024:
+                        yield event.plain_result(f"❌ 文件过大 ({file_size / (1024*1024):.2f} MB)，超过了最大预览限制 ({max_preview_size_mb} MB)。")
+                        return
+
+                yield event.plain_result(f"🔍 正在获取预览: {file_name}...")
+                
+                # 获取下载链接
+                download_url = await client.get_download_url(full_path)
+                if not download_url:
+                    yield event.plain_result("❌ 获取下载链接失败")
+                    return
+
+                # 下载到临时目录
+                temp_dir = os.path.join(StarTools.get_data_dir("openlist"), "temp_preview")
+                os.makedirs(temp_dir, exist_ok=True)
+                temp_file_path = os.path.join(temp_dir, f"preview_{int(time.time())}_{file_name}")
+                
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(download_url) as resp:
+                            if resp.status == 200:
+                                with open(temp_file_path, "wb") as f:
+                                    f.write(await resp.read())
+                            else:
+                                yield event.plain_result(f"❌ 下载文件失败: HTTP {resp.status}")
+                                return
+
+                    # 仅支持文本预览
+                    text_extensions = [".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".conf", ".cfg", ".toml", ".py", ".js", ".java", ".c", ".cpp", ".h", ".go", ".rs", ".php", ".rb", ".sh", ".bash", ".html", ".htm", ".css", ".jsx", ".tsx", ".ts", ".vue", ".sql", ".csv", ".properties", ".env"]
+                    
+                    if ext in text_extensions:
+                        text_length = user_config.get("text_preview_length", 1000)
+                        try:
+                            with open(temp_file_path, "rb") as f:
+                                content_bytes = f.read(text_length * 4) # 多读一点以防编码问题
+                                
+                                # 使用 chardet 检测编码
+                                detection = chardet.detect(content_bytes)
+                                encoding = detection.get('encoding', 'utf-8') or 'utf-8'
+                                confidence = detection.get('confidence', 0)
+                                logger.debug(f"文本预览编码检测: {encoding}, 置信度: {confidence:.2f}")
+                                
+                                try:
+                                    decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
+                                except:
+                                    # 如果检测出的编码失败，回退到 utf-8
+                                    encoding = 'utf-8'
+                                    decoded_text = content_bytes.decode('utf-8', errors='ignore').strip()
+                                    
+                                preview_text = decoded_text[:text_length]
+                                if len(decoded_text) > text_length:
+                                    preview_text += "\n\n..."
+                                
+                                yield event.plain_result(f"📝 文本预览:\n---\n{preview_text}")
+                        except Exception as e:
+                            logger.error(f"文本预览失败: {e}")
+                            yield event.plain_result(f"❌ 文本解析失败: {e}")
+                    else:
+                        yield event.plain_result(f"❓ 该格式 ({ext}) 不在支持的文本预览列表中。")
+
+                finally:
+                    # 清理临时文件
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"预览失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 预览失败: {str(e)}")
     @openlist_group.command("help")
     async def help_command(self, event: AstrMessageEvent):
         """显示全面且更新的帮助信息"""

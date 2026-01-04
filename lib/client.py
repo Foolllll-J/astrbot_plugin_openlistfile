@@ -246,3 +246,33 @@ class OpenlistClient:
         except Exception as e:
             logger.error(f"创建目录失败: {e}, 路径: {path}", exc_info=True)
             return False
+
+    async def list_archive_contents(self, path: str, archive_path: str = "/") -> Optional[Dict]:
+        """获取压缩包内的文件列表"""
+        try:
+            headers = {}
+            if self.token:
+                headers["Authorization"] = self.token
+
+            archive_data = {
+                "path": path,
+                "archive_path": archive_path
+            }
+
+            async with self.session.post(
+                f"{self.base_url}/api/fs/archive/list", json=archive_data, headers=headers
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    if result.get("code") == 200:
+                        return result.get("data")
+                    else:
+                        logger.error(f"获取压缩包列表失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        return None
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"获取压缩包列表失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    return None
+        except Exception as e:
+            logger.error(f"获取压缩包列表失败: {e}, 路径: {path}", exc_info=True)
+            return None
