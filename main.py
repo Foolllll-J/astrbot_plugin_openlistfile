@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 from urllib.parse import urljoin, quote, urlparse
 import aiohttp
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.message_components import Plain, Image, File
 from astrbot.api import logger
@@ -1281,6 +1281,199 @@ class OpenlistPlugin(Star):
         else:
             yield event.plain_result("❌ 未知操作。请使用 enable 或 disable。")
 
+    @openlist_group.command("restore")
+    async def restore_command(self, event: AstrMessageEvent, path: str, target: str = None):
+        """将 Openlist 路径中的文件恢复到群组或私聊。用法: /ol restore /路径 [@群号]"""
+        user_id = event.get_sender_id()
+        user_config = self.get_user_config(user_id)
+        if not self._validate_config(user_config):
+            yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+            return
+
+        # 1. 确定目标群号
+        target_group_id = None
+        if target:
+            if target.startswith("@"):
+                try:
+                    target_group_id = int(target[1:])
+                except ValueError:
+                    yield event.plain_result(f"❌ 群号格式错误: {target}")
+                    return
+            else:
+                yield event.plain_result(f"⚠️ 无法识别目标参数 '{target}'。群号请以 @ 开头。")
+                return
+        
+        # 如果未指定群号，尝试获取当前会话群号
+        if not target_group_id:
+            if event.message_obj.group_id:
+                target_group_id = int(event.message_obj.group_id)
+        
+        is_group = target_group_id is not None
+        target_desc = f"群 {target_group_id}" if is_group else "私聊会话"
+        
+        yield event.plain_result(f"🚀 正在启动恢复任务...\n📂 来源路径: {path}\n🎯 目标: {target_desc}")
+        
+        try:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                # 递归搜集文件
+                files_to_restore = []
+                base_path = path.rstrip('/')
+                
+                async def collect(current_path):
+                    res = await client.list_files(current_path, per_page=0)
+                    if not res: return
+                    for item in res.get("content", []):
+                        full_item_path = f"{current_path.rstrip('/')}/{item['name']}"
+                        if item.get("is_dir"):
+                            await collect(full_item_path)
+                        else:
+                            item["full_path"] = full_item_path
+                            # 计算相对于基础路径的相对路径
+                            rel = full_item_path[len(base_path):].lstrip('/')
+                            item["relative_path"] = rel
+                            files_to_restore.append(item)
+                
+                # 检查路径是否存在及类型
+                file_info = await client.get_file_info(path)
+                if not file_info:
+                    yield event.plain_result(f"❌ 路径不存在: {path}")
+                    return
+                
+                if file_info.get("is_dir"):
+                    await collect(base_path)
+                else:
+                    file_info["full_path"] = path
+                    file_info["relative_path"] = file_info["name"]
+                    files_to_restore.append(file_info)
+                
+                if not files_to_restore:
+                    yield event.plain_result(f"📂 路径下没有可恢复的文件。")
+                    return
+                
+                total = len(files_to_restore)
+                yield event.plain_result(f"📦 找到 {total} 个文件，开始下载并发送...")
+                
+                created_folders = {} # {folder_name: folder_id}
+                
+                # 如果是群组，预先获取根目录下的文件夹，避免重复创建并获取正确的 ID
+                if is_group:
+                    try:
+                        root_files = await event.bot.api.call_action("get_group_root_files", group_id=target_group_id)
+                        if root_files and "folders" in root_files:
+                            for f in root_files["folders"]:
+                                created_folders[f["folder_name"]] = f["folder_id"]
+                    except Exception as e:
+                        logger.warning(f"获取群根目录文件列表失败: {e}")
+
+                success_count = 0
+                fail_count = 0
+                
+                downloads_dir = os.path.join(StarTools.get_data_dir("openlist"), "downloads")
+                os.makedirs(downloads_dir, exist_ok=True)
+
+                for i, item in enumerate(files_to_restore, 1):
+                    file_name = item["name"]
+                    full_path = item["full_path"]
+                    rel_path = item["relative_path"]
+                    
+                    try:
+                        # 1. 下载文件
+                        download_url = await client.get_download_url(full_path)
+                        if not download_url:
+                            logger.warning(f"无法获取下载链接: {full_path}")
+                            fail_count += 1
+                            continue
+                        
+                        temp_file_path = os.path.join(downloads_dir, f"restore_{int(time.time())}_{file_name}")
+                        
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(download_url) as response:
+                                if response.status == 200:
+                                    with open(temp_file_path, "wb") as f:
+                                        async for chunk in response.content.iter_chunked(8192):
+                                            f.write(chunk)
+                                else:
+                                    logger.error(f"下载失败 {file_name}: HTTP {response.status}")
+                                    fail_count += 1
+                                    continue
+                        
+                        # 2. 发送/上传文件
+                        if is_group:
+                            # 处理文件夹逻辑 (仅限一层)
+                            folder_id = None
+                            if "/" in rel_path:
+                                folder_name = rel_path.split("/")[0]
+                                if folder_name not in created_folders:
+                                    # 创建文件夹
+                                    try:
+                                        # 接口不返回 ID，直接尝试创建
+                                        await event.bot.api.call_action("create_group_file_folder", group_id=target_group_id, folder_name=folder_name)
+                                        
+                                        # 创建后刷新列表以获取 ID
+                                        root_files = await event.bot.api.call_action("get_group_root_files", group_id=target_group_id)
+                                        if root_files and "folders" in root_files:
+                                            for f in root_files["folders"]:
+                                                if f["folder_name"] == folder_name:
+                                                    created_folders[folder_name] = f["folder_id"]
+                                                    break
+                                    except Exception as e:
+                                        # 可能是文件夹已存在，尝试从列表匹配
+                                        try:
+                                            root_files = await event.bot.api.call_action("get_group_root_files", group_id=target_group_id)
+                                            if root_files and "folders" in root_files:
+                                                for f in root_files["folders"]:
+                                                    if f["folder_name"] == folder_name:
+                                                        created_folders[folder_name] = f["folder_id"]
+                                                        break
+                                        except:
+                                            logger.error(f"无法获取群文件夹 {folder_name} 的 ID: {e}")
+                                
+                                folder_id = created_folders.get(folder_name)
+                            
+                            # 上传群文件
+                            try:
+                                await event.bot.api.call_action("upload_group_file", 
+                                    group_id=target_group_id, 
+                                    file=os.path.abspath(temp_file_path), 
+                                    name=file_name, 
+                                    folder=folder_id,
+                                    folder_id=folder_id # 兼容不同平台的参数名
+                                )
+                                success_count += 1
+                            except Exception as e:
+                                logger.error(f"上传群文件 {file_name} 失败: {e}")
+                                fail_count += 1
+                        else:
+                            # 私聊发送
+                            try:
+                                file_comp = File(name=file_name, file=temp_file_path)
+                                await event.send(MessageChain([file_comp]))
+                                success_count += 1
+                                # 私聊发送后稍作停顿，避免触发频率限制
+                                await asyncio.sleep(1)
+                            except Exception as e:
+                                logger.error(f"私聊发送文件 {file_name} 失败: {e}")
+                                fail_count += 1
+                                
+                        # 3. 清理临时文件
+                        if os.path.exists(temp_file_path):
+                            os.remove(temp_file_path)
+                            
+                        if i % 5 == 0 or i == total:
+                            logger.info(f"🔄 恢复进度: {i}/{total} (成功: {success_count}, 失败: {fail_count})")
+                            
+                    except Exception as e:
+                        logger.error(f"处理文件 {file_name} 时发生错误: {e}")
+                        fail_count += 1
+                        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+                            os.remove(temp_file_path)
+
+                yield event.plain_result(f"✅ 恢复任务完成!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n🎯 目标: {target_desc}")
+                
+        except Exception as e:
+            logger.error(f"恢复任务失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 恢复失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+
     @openlist_group.command("help")
     async def help_command(self, event: AstrMessageEvent):
         """显示全面且更新的帮助信息"""
@@ -1340,6 +1533,12 @@ class OpenlistPlugin(Star):
    - 示例: `/ol autobackup enable @123456 /backup` (指定群号和路径)
    - 示例: `/ol autobackup disable @123456` (禁用指定群的自动备份)
    - 提示: 禁用时无需提供路径。路径须以 `/` 开头，群号须以 `@` 开头。
+
+🚚 `/ol restore <路径> [@群号]`
+   - 将 Openlist 路径中的文件恢复（发送）到目标群组或私聊。
+   - 示例: `/ol restore /backup/group_123456` (恢复到当前会话)
+   - 示例: `/ol restore /docs @987654` (恢复到指定群)
+   - 提示: 目标为群组时会尝试保持一级目录结构。
 
 ---
 插件配置指令
