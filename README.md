@@ -1,10 +1,20 @@
+<div align="center">
+
 # <img src="https://raw.githubusercontent.com/OpenListTeam/Logo/main/logo.svg" width="32" height="32" style="vertical-align: middle;"> OpenList 助手
+
+<i>🚀 跨越终端，触手可及的网盘管理专家</i>
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-green?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white)
 ![AstrBot](https://img.shields.io/badge/framework-AstrBot-ff6b6b?style=flat-square)
 
-这是一款为 [AstrBot](https://astrbot.app) 设计的 OpenList 文件管理插件，让您可以通过聊天界面方便地管理 [OpenList](https://github.com/OpenListTeam/OpenList) 服务器上的文件。
+</div>
+
+## ✨ 简介
+
+一款为 [**AstrBot**](https://github.com/AstrBotDevs/AstrBot) 设计的 [**OpenList**](https://github.com/OpenListTeam/OpenList) 文件管理插件。它将强大的网盘管理功能带入聊天界面，让您可以像聊天一样轻松列出、搜索、下载和上传文件，支持智能导航、文件预览、群文件备份等多种高级特性。
+
+---
 
 ## ✨ 主要功能
 
@@ -18,6 +28,8 @@
 * 👁️ **内容预览** - 支持文本文件预览和压缩包内容查看。
 * ⚙️ **灵活设置** - 支全局设置和用户独立设置两种模式。
 * 🎨 **美化显示** - 智能文件图标，直观的信息展示。
+
+---
 
 ## 🔧 设置方式
 
@@ -69,6 +81,8 @@
 # 清理文件缓存
 /ol config clear_cache
 ```
+
+---
 
 ## 📖 使用指南
 
@@ -189,6 +203,8 @@
 /ol restore /backup/folder                     # 恢复整个目录到当前群
 ```
 
+---
+
 ## 📜 项目说明
 
 ### ⚙️ 配置说明
@@ -211,6 +227,8 @@ data/plugins_data/openlist/
     ├── user123_1234567890_file.txt # 临时下载文件
     └── ...
 ```
+
+---
 
 ## 🛠️ 故障排除
 
@@ -243,6 +261,8 @@ A: 请检查：
 /ol config test    # 测试连接
 /ol ls /           # 测试文件列表
 ```
+
+---
 
 ## 🔄 版本历史
 
@@ -306,16 +326,24 @@ A: 请检查：
 
 </details>
 
-## 📞 技术支持
-
-如有问题或建议，请：
-
-1. 查阅本文档的故障排除部分
-2. 在 AstrBot 社区群聊中寻求帮助
-3. 提交 [Issue](https://github.com/Foolllll-J/astrbot_plugin_openlistfile/issues) 到本仓库
-
+---
 
 ## 🙏 致谢
 
 本插件源代码基于 [astrbot_plugin_alistfile](https://github.com/linjianyan0229/astrbot_plugin_alistfile) 进行二次开发，在此向原作者表示衷心感谢！
+
+---
+
+## ❤️ 支持
+
+* [AstrBot 帮助文档](https://astrbot.app)
+* 如果您在使用中遇到问题，欢迎在本仓库提交 [Issue](https://github.com/Foolllll-J/astrbot_plugin_openlistfile/issues)。
+
+---
+
+<div align="center">
+
+**如果本插件对你有帮助，欢迎点个 ⭐ Star 支持一下！**
+
+</div>
 
