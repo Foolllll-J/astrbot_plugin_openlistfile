@@ -9,29 +9,16 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.message_components import Image, File
 from astrbot.api import logger
-from astrbot.api.event.filter import CustomFilter
-from astrbot.core.config import AstrBotConfig
-
 from .lib.client import OpenlistClient
 from .lib.config import UserConfigManager, GlobalConfigManager
 from .lib.cache import CacheManager
-
-
-class OpenlistUploadFilter(CustomFilter):
-    """文件上传自定义过滤器 - 处理包含文件或图片的消息"""
-
-    def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:
-        """检查消息是否包含文件或图片组件"""
-        messages = event.get_messages()
-        file_components = [msg for msg in messages if isinstance(msg, (File, Image))]
-        return len(file_components) > 0
 
 
 @register(
     "astrbot_plugin_openlistfile",
     "Foolllll",
     "OpenList助手",
-    "1.2.1",
+    "1.2.2",
     "https://github.com/Foolllll-J/astrbot_plugin_openlistfile",
 )
 class OpenlistPlugin(Star):
@@ -1181,12 +1168,15 @@ class OpenlistPlugin(Star):
         else:
             yield event.plain_result("❌ 未知操作，支持: /ol upload 或 /ol upload cancel")
 
-    @filter.custom_filter(OpenlistUploadFilter)
+    @filter.event_message_type(filter.EventMessageType.ALL)
     async def handle_file_message(self, event: AstrMessageEvent):
         """处理文件消息"""
+        if not isinstance(event, AstrMessageEvent): return
+        
         user_id = event.get_sender_id()
         upload_state = self._get_user_upload_state(user_id)
         if not upload_state["waiting"]: return
+        
         user_config = self.get_user_config(user_id)
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息")
