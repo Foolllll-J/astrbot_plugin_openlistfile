@@ -14,13 +14,6 @@ from .lib.config import UserConfigManager, GlobalConfigManager
 from .lib.cache import CacheManager
 
 
-@register(
-    "astrbot_plugin_openlistfile",
-    "Foolllll",
-    "OpenList助手",
-    "1.2.2",
-    "https://github.com/Foolllll-J/astrbot_plugin_openlistfile",
-)
 class OpenlistPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -31,6 +24,7 @@ class OpenlistPlugin(Star):
         self.cache_manager = CacheManager("openlist")
         self.user_navigation_state = {}
         self.user_upload_state = {}
+        self.autobackup_semaphore = asyncio.Semaphore(2)
 
     def get_webui_config(self, key: str, default=None):
         """获取WebUI配置项"""
@@ -373,6 +367,55 @@ class OpenlistPlugin(Star):
             logger.error(f"用户 {user_id} 获取下载链接失败: {e}, 路径: {file_path}, 文件名: {item.get('name', '')}", exc_info=True)
             yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
+    async def _run_group_file_autobackup(
+        self,
+        event: AstrMessageEvent,
+        file_component: File,
+        file_name: str,
+        file_size: Optional[int],
+        target_path: str,
+        user_config: Dict,
+        group_id: str,
+    ) -> None:
+        """后台执行群文件自动备份，避免阻塞同一条消息上的其他处理器。"""
+        async with self.autobackup_semaphore:
+            file_path = None
+            try:
+                file_path = await file_component.get_file()
+                if not file_path or not os.path.exists(file_path):
+                    logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
+                    return
+
+                actual_size = os.path.getsize(file_path)
+                max_size_mb = user_config.get("backup_max_size", 0)
+                if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
+                    logger.info(f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。")
+                    return
+
+                logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
+                async with OpenlistClient(
+                    user_config["openlist_url"],
+                    user_config.get("public_openlist_url", ""),
+                    user_config.get("username", ""),
+                    user_config.get("password", ""),
+                    user_config.get("token", ""),
+                    user_config.get("fixed_base_directory", "")
+                ) as client:
+                    await client.mkdir(target_path)
+                    success = await client.upload_file(file_path, target_path, file_name)
+                    if success:
+                        logger.info(f"✅ [自动备份] 文件 {file_name} 上传成功。")
+                    else:
+                        logger.error(f"❌ [自动备份] 文件 {file_name} 上传失败。")
+            except Exception as e:
+                logger.error(f"❌ [自动备份] 处理文件 {file_name} 出错: {e}", exc_info=True)
+            finally:
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except OSError as e:
+                        logger.warning(f"⚠️ [自动备份] 清理临时文件失败: group={group_id}, file={file_name}, err={e}")
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=2)
     async def handle_group_file_upload(self, event: AstrMessageEvent):
         """处理群文件上传事件（自动备份）"""
@@ -457,42 +500,20 @@ class OpenlistPlugin(Star):
                         logger.info(f"⏭️ [自动备份] 文件 {file_name} 后缀 {ext} 不在允许范围内，跳过。")
                         return
                 
-                try:
-                    file_path = await file_component.get_file()
-                    if not file_path or not os.path.exists(file_path):
-                        logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
-                        return
-                    
-                    try:
-                        # 再次确认实际下载的文件大小
-                        actual_size = os.path.getsize(file_path)
-                        max_size_mb = user_config.get("backup_max_size", 0)
-                        if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
-                            logger.info(f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。")
-                            return
-                        
-                        logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
-                        async with OpenlistClient(
-                            user_config["openlist_url"], 
-                            user_config.get("public_openlist_url", ""), 
-                            user_config.get("username", ""), 
-                            user_config.get("password", ""), 
-                            user_config.get("token", ""), 
-                            user_config.get("fixed_base_directory", "")
-                        ) as client:
-                            await client.mkdir(target_path)
-                            success = await client.upload_file(file_path, target_path, file_name)
-                            if success:
-                                logger.info(f"✅ [自动备份] 文件 {file_name} 上传成功。")
-                            else:
-                                logger.error(f"❌ [自动备份] 文件 {file_name} 上传失败。")
-                    finally:
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                    
-                except Exception as e:
-                    logger.error(f"❌ [自动备份] 处理文件 {file_name} 出错: {e}", exc_info=True)
-                
+                task_user_config = dict(user_config)
+                asyncio.create_task(
+                    self._run_group_file_autobackup(
+                        event=event,
+                        file_component=file_component,
+                        file_name=file_name,
+                        file_size=file_size,
+                        target_path=target_path,
+                        user_config=task_user_config,
+                        group_id=group_id,
+                    )
+                )
+                logger.debug(f"🧵 [自动备份] 已转入后台任务: group={group_id}, file={file_name}")
+
                 break # 已经处理了文件，跳出循环
 
 
