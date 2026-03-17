@@ -420,7 +420,7 @@ class OpenlistPlugin(Star):
     async def handle_group_file_upload(self, event: AstrMessageEvent):
         """处理群文件上传事件（自动备份）"""
         raw_event_data = event.message_obj.raw_message
-        message_list = raw_event_data.get("message")
+        message_list = raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
         if not isinstance(message_list, list):
             return
         
@@ -524,7 +524,7 @@ class OpenlistPlugin(Star):
 
         file_name = None
         raw_event_data = event.message_obj.raw_message
-        message_list = raw_event_data.get("message")
+        message_list = raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
         if isinstance(message_list, list):
             for segment_dict in message_list:
                 if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
