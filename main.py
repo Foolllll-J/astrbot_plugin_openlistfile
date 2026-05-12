@@ -251,8 +251,8 @@ class OpenlistPlugin(Star):
             result += f" | 📊 总计: {dirs_count} 个文件夹, {files_only_count} 个文件"
 
         result += f"\n\n💡 快速导航:"
-        result += f"\n   • /ol ls <序号> - 进入目录/获取链接"
-        result += f"\n   • /ol download <序号> - 下载并发送文件"
+        result += f"\n   • /ol ls 序号 - 进入目录/获取链接"
+        result += f"\n   • /ol download 序号 - 下载并发送文件"
         if not is_search_result:
              result += f"\n   • /ol quit - 返回上级目录"
         if total_pages > 1:
@@ -784,7 +784,7 @@ class OpenlistPlugin(Star):
 
     @openlist_group.command("config", alias=["配置"])
     async def config_command(self, event: AstrMessageEvent, action: str = "show", key: str = "", value: str = ""):
-        # 配置命令实现
+        """配置 Openlist 连接与插件参数"""
         user_id = event.get_sender_id()
         if action == "show":
             user_config = self.get_user_config(user_id)
