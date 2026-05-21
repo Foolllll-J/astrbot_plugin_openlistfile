@@ -86,11 +86,12 @@
                 "description": "最大下载文件大小(MB)",
                 "type": "int",
                 "slider": {
-                    "min": 1,
+                    "min": 0,
                     "max": 500,
                     "step": 1
                 },
-                "default": 50
+                "default": 50,
+                "hint": "0 表示不限制。"
             },
             "max_upload_size": {
                 "description": "最大上传文件大小(MB)",

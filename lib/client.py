@@ -8,6 +8,10 @@ from urllib.parse import quote, urlparse
 from astrbot.api import logger
 
 
+UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024
+UPLOAD_PROGRESS_STEP = 64 * 1024 * 1024
+
+
 class ProgressFilePayload(aiohttp.Payload):
     """带进度日志的文件上传载荷，保留明确的 Content-Length。"""
 
@@ -28,7 +32,6 @@ class ProgressFilePayload(aiohttp.Payload):
     async def write(self, writer):
         uploaded = 0
         last_logged = 0
-        progress_step = 10 * 1024 * 1024
         transport = getattr(writer, "transport", None)
         started_at = time.monotonic()
         if transport and not self._transport_logged:
@@ -39,12 +42,12 @@ class ProgressFilePayload(aiohttp.Payload):
             self._transport_logged = True
         with open(self.file_path, "rb") as f:
             while True:
-                chunk = f.read(1024 * 1024)
+                chunk = f.read(UPLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
                 uploaded += len(chunk)
                 await writer.write(chunk)
-                if uploaded == len(chunk) or uploaded - last_logged >= progress_step or uploaded == self.file_size:
+                if uploaded == len(chunk) or uploaded - last_logged >= UPLOAD_PROGRESS_STEP or uploaded == self.file_size:
                     elapsed = max(time.monotonic() - started_at, 0.001)
                     speed = uploaded / 1024 / 1024 / elapsed
                     buffer_size = transport.get_write_buffer_size() if transport else None
@@ -53,7 +56,6 @@ class ProgressFilePayload(aiohttp.Payload):
                         f"speed={speed:.2f}MB/s write_buffer={buffer_size}"
                     )
                     last_logged = uploaded
-                await asyncio.sleep(0)
         elapsed = max(time.monotonic() - started_at, 0.001)
         logger.info(
             f"上传请求体写入完成: {self._filename} {uploaded}/{self.file_size} bytes "
@@ -82,7 +84,6 @@ class ProgressStreamPayload(aiohttp.Payload):
     async def write(self, writer):
         uploaded = 0
         last_logged = 0
-        progress_step = 10 * 1024 * 1024
         transport = getattr(writer, "transport", None)
         started_at = time.monotonic()
         if transport and not self._transport_logged:
@@ -97,7 +98,11 @@ class ProgressStreamPayload(aiohttp.Payload):
                 continue
             uploaded += len(chunk)
             await writer.write(chunk)
-            if uploaded == len(chunk) or uploaded - last_logged >= progress_step or (self.file_size and uploaded == self.file_size):
+            if (
+                uploaded == len(chunk)
+                or uploaded - last_logged >= UPLOAD_PROGRESS_STEP
+                or (self.file_size is not None and uploaded == self.file_size)
+            ):
                 elapsed = max(time.monotonic() - started_at, 0.001)
                 speed = uploaded / 1024 / 1024 / elapsed
                 buffer_size = transport.get_write_buffer_size() if transport else None
@@ -109,8 +114,9 @@ class ProgressStreamPayload(aiohttp.Payload):
                 last_logged = uploaded
 
         elapsed = max(time.monotonic() - started_at, 0.001)
+        total = self.file_size if self.file_size is not None else "unknown"
         logger.info(
-            f"上传请求体写入完成: {self._filename} {uploaded}/{self.file_size or 'unknown'} bytes "
+            f"上传请求体写入完成: {self._filename} {uploaded}/{total} bytes "
             f"elapsed={elapsed:.2f}s avg_speed={uploaded / 1024 / 1024 / elapsed:.2f}MB/s"
         )
 
@@ -358,7 +364,7 @@ class OpenlistClient:
                         logger.warning(f"上游 Content-Length 无效: {content_length}")
 
                 payload = ProgressStreamPayload(
-                    source_response.content.iter_chunked(1024 * 1024),
+                    source_response.content.iter_chunked(UPLOAD_CHUNK_SIZE),
                     filename,
                     file_size,
                 )

@@ -104,10 +104,14 @@ class OpenlistPlugin(Star):
     def _get_size_limit_mb(self, user_config: Dict, key: str, default: int) -> int:
         """读取大小限制配置；0 表示不限制。"""
         try:
-            return int(user_config.get(key, default))
+            value = int(user_config.get(key, default))
         except (TypeError, ValueError):
             logger.warning(f"配置 {key} 的值无效: {user_config.get(key)!r}，已使用默认值 {default}MB")
             return default
+        if value < 0:
+            logger.warning(f"配置 {key} 的值不能为负数: {value}，已使用默认值 {default}MB")
+            return default
+        return value
 
     def _get_upload_mode_timeout_minutes(self, user_config: Dict) -> int:
         """读取上传模式持续时间，单位分钟。"""
@@ -333,10 +337,10 @@ class OpenlistPlugin(Star):
             result += f" | 📊 总计: {dirs_count} 个文件夹, {files_only_count} 个文件"
 
         result += f"\n\n💡 快速导航:"
-        result += f"\n   • /ol ls 序号 - 进入目录/获取链接"
-        result += f"\n   • /ol download 序号 - 下载并发送文件"
+        result += f"\n\n   • /ol ls 序号 - 进入目录/获取链接"
+        result += f"\n\n   • /ol download 序号 - 下载并发送文件"
         if not is_search_result:
-             result += f"\n   • /ol quit - 返回上级目录"
+             result += f"\n\n   • /ol quit - 返回上级目录"
         if total_pages > 1:
             result += f"\n   • /ol prev - ⬅️ 上一页"
             result += f"\n   • /ol next - ➡️ 下一页"
@@ -347,9 +351,9 @@ class OpenlistPlugin(Star):
         user_id = event.get_sender_id()
         file_name = file_item.get("name", "")
         file_size = file_item.get("size", 0)
-        max_download_size_mb = user_config.get("max_download_size", 50)
+        max_download_size_mb = self._get_size_limit_mb(user_config, "max_download_size", 50)
         max_download_size = max_download_size_mb * 1024 * 1024
-        if file_size > max_download_size:
+        if max_download_size_mb > 0 and file_size > max_download_size:
             size_mb = file_size / (1024 * 1024)
             yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_download_size_mb}MB\n💡 请使用 /ol ls 获取下载链接")
             return
@@ -464,7 +468,7 @@ class OpenlistPlugin(Star):
         async with self.autobackup_semaphore:
             file_path = None
             try:
-                max_size_mb = user_config.get("backup_max_size", 0)
+                max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
                 if max_size_mb > 0 and file_size is not None and file_size > (max_size_mb * 1024 * 1024):
                     logger.info(f"⏭️ [自动备份] 文件 {file_name} 事件大小 {file_size} 超过限制 {max_size_mb}MB，跳过。")
                     return
@@ -576,7 +580,7 @@ class OpenlistPlugin(Star):
                 
                 # 预先检查大小限制 (从事件数据获取)
                 if file_size is not None:
-                    max_size_mb = user_config.get("backup_max_size", 0)
+                    max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
                     if max_size_mb > 0 and file_size > (max_size_mb * 1024 * 1024):
                         logger.info(f"⏭️ [自动备份] 文件 {file_name} 超过限制 {max_size_mb}MB (事件报送大小: {file_size})，跳过。")
                         return
@@ -796,7 +800,7 @@ class OpenlistPlugin(Star):
             return
             
         allowed_exts = user_config.get("backup_allowed_extensions", [])
-        max_size_mb = user_config.get("backup_max_size", 0)
+        max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
         max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
         
         filtered_items = []
