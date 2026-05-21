@@ -53,12 +53,14 @@ class OpenlistPlugin(Star):
             "cache_duration": "cache_duration",
             "max_download_size": "max_download_size",
             "max_upload_size": "max_upload_size",
+            "upload_mode_timeout": "upload_mode_timeout",
             "require_user_auth": "require_user_auth",
             "autobackup_groups": "autobackup_groups",
             "backup_allowed_extensions": "backup_allowed_extensions",
             "backup_max_size": "backup_max_size",
         }
         
+        defaults = self.global_config_manager.default_config
         for webui_key, local_key in mapping.items():
             webui_val = self.get_webui_config(webui_key)
             if webui_val is not None:
@@ -74,9 +76,22 @@ class OpenlistPlugin(Star):
                         if gid not in existing_gids:
                             combined.append(item)
                     config[local_key] = combined
-                # 其他项，只有当本地配置是空/默认时才使用 WebUI
-                elif not config.get(local_key):
-                    config[local_key] = webui_val
+                # 其他项，只有当本地配置为空或仍为默认值时才使用 WebUI
+                else:
+                    current_val = config.get(local_key)
+                    default_val = defaults.get(local_key, defaults.get(webui_key))
+                    if current_val in (None, "") or current_val == default_val:
+                        config[local_key] = webui_val
+
+        # 兼容旧版 global_config.json 中的 default_* 字段
+        for legacy_key, local_key in {
+            "default_openlist_url": "openlist_url",
+            "default_username": "username",
+            "default_password": "password",
+            "default_token": "token",
+        }.items():
+            if not config.get(local_key) and config.get(legacy_key):
+                config[local_key] = config[legacy_key]
 
         # 统一将扩展名字符串转为列表
         for key in ["allowed_extensions", "backup_allowed_extensions"]:
@@ -85,6 +100,26 @@ class OpenlistPlugin(Star):
                 config[key] = [ext if ext.startswith(".") else f".{ext}" for ext in config[key]]
                 
         return config
+
+    def _get_size_limit_mb(self, user_config: Dict, key: str, default: int) -> int:
+        """读取大小限制配置；0 表示不限制。"""
+        try:
+            return int(user_config.get(key, default))
+        except (TypeError, ValueError):
+            logger.warning(f"配置 {key} 的值无效: {user_config.get(key)!r}，已使用默认值 {default}MB")
+            return default
+
+    def _get_upload_mode_timeout_minutes(self, user_config: Dict) -> int:
+        """读取上传模式持续时间，单位分钟。"""
+        try:
+            timeout = int(user_config.get("upload_mode_timeout", 10))
+        except (TypeError, ValueError):
+            logger.warning(f"配置 upload_mode_timeout 的值无效: {user_config.get('upload_mode_timeout')!r}，已使用默认值 10 分钟")
+            return 10
+        if timeout < 1:
+            logger.warning(f"配置 upload_mode_timeout 的值过小: {timeout}，已使用默认值 10 分钟")
+            return 10
+        return timeout
 
     async def initialize(self):
         """插件初始化"""
@@ -157,15 +192,62 @@ class OpenlistPlugin(Star):
             return items[number - 1]
         return None
 
-    def _get_user_upload_state(self, user_id: str) -> Dict:
-        """获取用户上传状态"""
-        if user_id not in self.user_upload_state:
-            self.user_upload_state[user_id] = {"waiting": False, "target_path": "/"}
-        return self.user_upload_state[user_id]
+    def _get_upload_state_key(self, event: AstrMessageEvent) -> str:
+        """按会话隔离上传模式，避免同一用户在不同群聊间串状态。"""
+        user_id = event.get_sender_id()
+        message_obj = getattr(event, "message_obj", None)
+        group_id = getattr(message_obj, "group_id", None)
+        if group_id:
+            return f"group:{group_id}:user:{user_id}"
+        return f"private:user:{user_id}"
 
-    def _set_user_upload_waiting(self, user_id: str, waiting: bool, target_path: str = "/"):
+    def _resolve_target_path(self, user_id: str, path: str) -> str:
+        """将上传目标路径解析为 OpenList 绝对路径。"""
+        path = (path or "").strip()
+        if not path:
+            return self._get_user_navigation_state(user_id)["current_path"]
+        if path.startswith("/"):
+            return path.rstrip("/") or "/"
+        current_path = self._get_user_navigation_state(user_id)["current_path"]
+        return f"{current_path.rstrip('/')}/{path}".rstrip("/") or "/"
+
+    def _is_regular_message_event(self, event: AstrMessageEvent) -> bool:
+        """过滤 notice、回调等非普通消息事件，避免上传模式误响应。"""
+        message_obj = getattr(event, "message_obj", None)
+        raw_event_data = getattr(message_obj, "raw_message", None)
+        if isinstance(raw_event_data, dict):
+            post_type = raw_event_data.get("post_type")
+            if post_type is not None and post_type != "message":
+                return False
+            message_type = raw_event_data.get("message_type")
+            if message_type is not None and message_type not in ("group", "private"):
+                return False
+            self_id = raw_event_data.get("self_id")
+            sender_id = raw_event_data.get("user_id")
+            if self_id is not None and sender_id is not None and str(self_id) == str(sender_id):
+                return False
+
+        self_id = getattr(message_obj, "self_id", None)
+        sender = getattr(message_obj, "sender", None)
+        sender_id = getattr(sender, "user_id", None) if sender else None
+        if self_id is not None and sender_id is not None and str(self_id) == str(sender_id):
+            return False
+
+        astr_message_type = getattr(message_obj, "type", None)
+        if astr_message_type is None:
+            return True
+        type_name = getattr(astr_message_type, "name", str(astr_message_type))
+        return type_name in ("GROUP_MESSAGE", "PRIVATE_MESSAGE") or str(astr_message_type).endswith((".GROUP_MESSAGE", ".PRIVATE_MESSAGE"))
+
+    def _get_user_upload_state(self, state_key: str) -> Dict:
+        """获取用户上传状态"""
+        if state_key not in self.user_upload_state:
+            self.user_upload_state[state_key] = {"waiting": False, "target_path": "/"}
+        return self.user_upload_state[state_key]
+
+    def _set_user_upload_waiting(self, state_key: str, waiting: bool, target_path: str = "/"):
         """设置用户上传等待状态"""
-        upload_state = self._get_user_upload_state(user_id)
+        upload_state = self._get_user_upload_state(state_key)
         upload_state["waiting"] = waiting
         upload_state["target_path"] = target_path
 
@@ -373,6 +455,7 @@ class OpenlistPlugin(Star):
         file_component: File,
         file_name: str,
         file_size: Optional[int],
+        file_url: str,
         target_path: str,
         user_config: Dict,
         group_id: str,
@@ -381,15 +464,9 @@ class OpenlistPlugin(Star):
         async with self.autobackup_semaphore:
             file_path = None
             try:
-                file_path = await file_component.get_file()
-                if not file_path or not os.path.exists(file_path):
-                    logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
-                    return
-
-                actual_size = os.path.getsize(file_path)
                 max_size_mb = user_config.get("backup_max_size", 0)
-                if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
-                    logger.info(f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。")
+                if max_size_mb > 0 and file_size is not None and file_size > (max_size_mb * 1024 * 1024):
+                    logger.info(f"⏭️ [自动备份] 文件 {file_name} 事件大小 {file_size} 超过限制 {max_size_mb}MB，跳过。")
                     return
 
                 logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
@@ -402,7 +479,28 @@ class OpenlistPlugin(Star):
                     user_config.get("fixed_base_directory", "")
                 ) as client:
                     await client.mkdir(target_path)
-                    success = await client.upload_file(file_path, target_path, file_name)
+                    if file_url and file_size is not None:
+                        logger.info(f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}")
+                        success = await client.upload_url_stream(file_url, target_path, file_name, file_size)
+                    else:
+                        get_file_started_at = time.monotonic()
+                        file_path = await file_component.get_file()
+                        logger.info(
+                            f"📥 [自动备份] 本地获取完成: {file_name}, path={file_path}, "
+                            f"elapsed={time.monotonic() - get_file_started_at:.2f}s"
+                        )
+
+                        if not file_path or not os.path.exists(file_path):
+                            logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
+                            return
+
+                        actual_size = os.path.getsize(file_path)
+                        if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
+                            logger.info(f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。")
+                            return
+
+                        success = await client.upload_file(file_path, target_path, file_name)
+
                     if success:
                         logger.info(f"✅ [自动备份] 文件 {file_name} 上传成功。")
                     else:
@@ -431,6 +529,7 @@ class OpenlistPlugin(Star):
                 file_name = data_dict.get("file")
                 file_id = data_dict.get("file_id")
                 file_size = data_dict.get("file_size")
+                file_url = data_dict.get("url")
                 
                 if not file_name or not file_id:
                     continue
@@ -507,6 +606,7 @@ class OpenlistPlugin(Star):
                         file_component=file_component,
                         file_name=file_name,
                         file_size=file_size,
+                        file_url=file_url,
                         target_path=target_path,
                         user_config=task_user_config,
                         group_id=group_id,
@@ -519,10 +619,17 @@ class OpenlistPlugin(Star):
 
     async def _upload_file(self, event: AstrMessageEvent, file_component: File, user_config: Dict):
         user_id = event.get_sender_id()
-        upload_state = self._get_user_upload_state(user_id)
+        upload_state_key = self._get_upload_state_key(event)
+        upload_state = self._get_user_upload_state(upload_state_key)
         target_path = upload_state["target_path"]
 
         file_name = None
+        raw_file_id = None
+        raw_file_size = None
+        raw_file_url = None
+        component_name = getattr(file_component, "name", None)
+        component_url = getattr(file_component, "url", None)
+        component_file = getattr(file_component, "file_", None)
         raw_event_data = event.message_obj.raw_message
         message_list = raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
         if isinstance(message_list, list):
@@ -530,35 +637,98 @@ class OpenlistPlugin(Star):
                 if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
                     data_dict = segment_dict.get("data", {})
                     file_name = data_dict.get("file")
+                    raw_file_id = data_dict.get("file_id")
+                    raw_file_size = data_dict.get("file_size")
+                    raw_file_url = data_dict.get("url")
                     if file_name:
                         break
 
+        file_name = file_name or component_name
         if not file_name:
             yield event.plain_result("出现异常，请稍后尝试上传")
             logger.warning(f"用户 {user_id} 上传文件失败：无法从原始消息中解析出有效的文件名。")
             return
 
+        raw_file_size_int = None
+        if raw_file_size not in (None, ""):
+            try:
+                raw_file_size_int = int(raw_file_size)
+            except (TypeError, ValueError):
+                logger.warning(f"用户 {user_id} 上传文件大小解析失败: name={file_name}, raw_size={raw_file_size}")
+
         try:
+            logger.info(
+                f"用户 {user_id} 准备处理上传文件: name={file_name}, target={target_path}, "
+                f"raw_size={raw_file_size}, file_id={raw_file_id}, raw_has_url={bool(raw_file_url)}, "
+                f"component_name={component_name}, component_has_url={bool(component_url)}, "
+                f"component_file={component_file}"
+            )
+            max_upload_size_mb = self._get_size_limit_mb(user_config, "max_upload_size", 100)
+            max_upload_size = max_upload_size_mb * 1024 * 1024
+            if max_upload_size_mb > 0 and raw_file_size_int is not None and raw_file_size_int > max_upload_size:
+                size_mb = raw_file_size_int / (1024 * 1024)
+                yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
+                return
+
+            upload_url = raw_file_url or component_url
+            if upload_url and (raw_file_size_int is not None or max_upload_size_mb == 0):
+                yield event.plain_result(f"📤 开始上传: {file_name}\n💾 大小: {self._format_file_size(raw_file_size_int) if raw_file_size_int is not None else '未知'}\n📂 目标: {target_path}")
+                logger.info(
+                    f"用户 {user_id} 使用 URL 流式中转上传: name={file_name}, "
+                    f"size={raw_file_size_int}, target={target_path}, openlist_url={user_config.get('openlist_url')}"
+                )
+                async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                    success = await client.upload_url_stream(upload_url, target_path, file_name, raw_file_size_int)
+                    if success:
+                        yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
+                        self._set_user_upload_waiting(upload_state_key, False)
+                        result = await client.list_files(target_path)
+                        if result:
+                            files = result.get("content", [])
+                            self._update_user_navigation_state(user_id, target_path, files)
+                            formatted_list = self._format_file_list(files, target_path, user_config, user_id)
+                            yield event.plain_result(f"📁 当前目录已更新:\n\n{formatted_list}")
+                    else:
+                        yield event.plain_result("❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+                return
+
+            if upload_url and raw_file_size_int is None and max_upload_size_mb > 0:
+                logger.warning(f"用户 {user_id} 上传文件缺少有效大小，无法预先执行大小限制，回退到本地临时文件上传: name={file_name}")
+
+            yield event.plain_result(f"📥 正在获取文件: {file_name}\n💾 大小: {self._format_file_size(raw_file_size_int) if raw_file_size_int is not None else '未知'}")
+            get_file_started_at = time.monotonic()
             file_path = await file_component.get_file()
+            get_file_elapsed = time.monotonic() - get_file_started_at
+
             if not file_path or not os.path.exists(file_path):
+                logger.error(
+                    f"用户 {user_id} 获取上传文件失败: name={file_name}, returned_path={file_path}, "
+                    f"elapsed={get_file_elapsed:.2f}s"
+                )
                 yield event.plain_result("❌ 无法获取文件，请重新发送")
                 return
 
             try:
                 file_size = os.path.getsize(file_path)
-                max_upload_size_mb = user_config.get("max_upload_size", 100)
-                max_upload_size = max_upload_size_mb * 1024 * 1024
-                if file_size > max_upload_size:
+                logger.info(
+                    f"用户 {user_id} 获取上传文件完成: name={file_name}, local_path={file_path}, "
+                    f"actual_size={file_size}, elapsed={get_file_elapsed:.2f}s"
+                )
+                if max_upload_size_mb > 0 and file_size > max_upload_size:
                     size_mb = file_size / (1024 * 1024)
                     yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
                     return
 
                 yield event.plain_result(f"📤 开始上传: {file_name}\n💾 大小: {self._format_file_size(file_size)}\n📂 目标: {target_path}")
+                logger.info(
+                    f"用户 {user_id} 开始调用 OpenList 上传: name={file_name}, local_path={file_path}, "
+                    f"target={target_path}, openlist_url={user_config.get('openlist_url')}"
+                )
                 async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                     success = await client.upload_file(file_path, target_path, file_name)
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
-                        self._set_user_upload_waiting(user_id, False)
+                        self._set_user_upload_waiting(upload_state_key, False)
                         result = await client.list_files(target_path)
                         if result:
                             files = result.get("content", [])
@@ -573,7 +743,7 @@ class OpenlistPlugin(Star):
         except Exception as e:
             logger.error(f"用户 {user_id} 上传文件失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
-            self._set_user_upload_waiting(user_id, False)
+            self._set_user_upload_waiting(upload_state_key, False)
 
     async def _get_group_files_recursive(self, bot, group_id: int, folder_id: str = "/", current_path: str = "") -> List[Dict]:
         """递归获取群文件列表"""
@@ -657,10 +827,7 @@ class OpenlistPlugin(Star):
         
         success_count = 0
         fail_count = 0
-        
-        temp_dir = os.path.join(StarTools.get_data_dir("openlist"), "temp_backup")
-        os.makedirs(temp_dir, exist_ok=True)
-        
+
         async with OpenlistClient(
             user_config["openlist_url"], 
             user_config.get("public_openlist_url", ""), 
@@ -695,25 +862,23 @@ class OpenlistPlugin(Star):
                         if not download_url:
                             fail_count += 1
                             return
-                            
-                        local_path = os.path.join(temp_dir, f"{int(time.time())}_{file_id}_{file_name}")
+
+                        upload_size = item.get("file_size")
                         try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(download_url) as resp:
-                                    if resp.status == 200:
-                                        with open(local_path, "wb") as f:
-                                            f.write(await resp.read())
-                                        
-                                        up_res = await client.upload_file(local_path, target_dir, file_name)
-                                        if up_res:
-                                            success_count += 1
-                                        else:
-                                            fail_count += 1
-                                    else:
-                                        fail_count += 1
-                        finally:
-                            if os.path.exists(local_path):
-                                os.remove(local_path)
+                            upload_size = int(upload_size) if upload_size is not None else None
+                        except (TypeError, ValueError):
+                            upload_size = None
+
+                        target_dir = target_dir or "/"
+                        logger.info(
+                            f"🚀 [群备份] 使用 URL 流式中转: {file_name}, "
+                            f"size={upload_size}, target={target_dir}"
+                        )
+                        up_res = await client.upload_url_stream(download_url, target_dir, file_name, upload_size)
+                        if up_res:
+                            success_count += 1
+                        else:
+                            fail_count += 1
                     except Exception as e:
                         logger.error(f"备份文件 {file_name} 失败: {e}")
                         fail_count += 1
@@ -732,7 +897,8 @@ class OpenlistPlugin(Star):
     async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
         """上传图片到Openlist"""
         user_id = event.get_sender_id()
-        upload_state = self._get_user_upload_state(user_id)
+        upload_state_key = self._get_upload_state_key(event)
+        upload_state = self._get_user_upload_state(upload_state_key)
         target_path = upload_state["target_path"]
         try:
             image_path = await image_component.convert_to_file_path()
@@ -749,9 +915,9 @@ class OpenlistPlugin(Star):
                     ext = ".jpg"
                 filename = f"image_{timestamp}{ext}"
                 file_size = os.path.getsize(image_path)
-                max_upload_size_mb = user_config.get("max_upload_size", 100)
+                max_upload_size_mb = self._get_size_limit_mb(user_config, "max_upload_size", 100)
                 max_upload_size = max_upload_size_mb * 1024 * 1024
-                if file_size > max_upload_size:
+                if max_upload_size_mb > 0 and file_size > max_upload_size:
                     size_mb = file_size / (1024 * 1024)
                     yield event.plain_result(f"❌ 图片过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
                     return
@@ -760,7 +926,7 @@ class OpenlistPlugin(Star):
                     success = await client.upload_file(image_path, target_path, filename)
                     if success:
                         yield event.plain_result(f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
-                        self._set_user_upload_waiting(user_id, False)
+                        self._set_user_upload_waiting(upload_state_key, False)
                         result = await client.list_files(target_path)
                         if result:
                             files = result.get("content", [])
@@ -775,7 +941,7 @@ class OpenlistPlugin(Star):
         except Exception as e:
             logger.error(f"用户 {user_id} 上传图片失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
-            self._set_user_upload_waiting(user_id, False)
+            self._set_user_upload_waiting(upload_state_key, False)
 
     @filter.command_group("ol", alias=["网盘"])
     def openlist_group(self):
@@ -840,14 +1006,14 @@ class OpenlistPlugin(Star):
                 "openlist_url", "username", "password", "token", 
                 "max_display_files", "public_openlist_url", 
                 "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
-                "enable_cache", "cache_duration", "max_download_size", "max_upload_size",
+                "enable_cache", "cache_duration", "max_download_size", "max_upload_size", "upload_mode_timeout",
                 "backup_allowed_extensions", "backup_max_size"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
             
-            if key in ["max_display_files", "cache_duration", "backup_max_size", "max_preview_size", "text_preview_length", "max_download_size", "max_upload_size"]:
+            if key in ["max_display_files", "cache_duration", "backup_max_size", "max_preview_size", "text_preview_length", "max_download_size", "max_upload_size", "upload_mode_timeout"]:
                 try:
                     value = int(value)
                     if key == "max_display_files" and (value < 1 or value > 100):
@@ -864,6 +1030,9 @@ class OpenlistPlugin(Star):
                         return
                     if key == "max_upload_size" and (value < 0):
                         yield event.plain_result("❌ max_upload_size 必须大于等于0")
+                        return
+                    if key == "upload_mode_timeout" and (value < 1):
+                        yield event.plain_result("❌ upload_mode_timeout 必须大于0")
                         return
                     if key == "max_preview_size" and (value < -1):
                         yield event.plain_result("❌ max_preview_size 必须大于等于 -1 (-1表示禁用, 0表示不限制)")
@@ -1148,69 +1317,91 @@ class OpenlistPlugin(Star):
             yield event.plain_result(f"❌ 回退失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("upload", alias=["上传"])
-    async def upload_command(self, event: AstrMessageEvent, action: str = ""):
+    async def upload_command(self, event: AstrMessageEvent, target: str = ""):
         """上传文件命令"""
         user_id = event.get_sender_id()
-        if action == "cancel":
-            upload_state = self._get_user_upload_state(user_id)
+        upload_state_key = self._get_upload_state_key(event)
+        target = (target or "").strip()
+        if target.lower() in ("cancel", "取消"):
+            upload_state = self._get_user_upload_state(upload_state_key)
             if upload_state["waiting"]:
-                self._set_user_upload_waiting(user_id, False)
+                self._set_user_upload_waiting(upload_state_key, False)
                 yield event.plain_result("✅ 已取消上传模式")
             else:
                 yield event.plain_result("❌ 当前不在上传模式")
-        elif not action:
-            user_config = self.get_user_config(user_id)
-            if not self._validate_config(user_config):
-                yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
-                return
-            nav_state = self._get_user_navigation_state(user_id)
-            current_path = nav_state["current_path"]
-            self._set_user_upload_waiting(user_id, True, current_path)
-            upload_text = f"""📤 上传模式已启动
+            return
 
-📂 目标目录: {current_path}
+        user_config = self.get_user_config(user_id)
+        if not self._validate_config(user_config):
+            yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+            return
+
+        upload_timeout_minutes = self._get_upload_mode_timeout_minutes(user_config)
+        target_path = self._resolve_target_path(user_id, target)
+        try:
+            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                result = await client.list_files(target_path, per_page=1)
+                if result is None:
+                    yield event.plain_result(f"❌ 无法访问上传目标目录: {target_path}")
+                    return
+        except Exception as e:
+            logger.error(f"用户 {user_id} 检查上传目标目录失败: {e}, 路径: {target_path}", exc_info=True)
+            yield event.plain_result(f"❌ 无法访问上传目标目录: {target_path}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+            return
+
+        self._set_user_upload_waiting(upload_state_key, True, target_path)
+        upload_text = f"""📤 上传模式已启动
+
+📂 目标目录: {target_path}
 
 💡 请直接发送文件或图片，系统会自动上传到此目录
-⏰ 上传模式将在10分钟后自动取消
+
+⏰ 上传模式将在{upload_timeout_minutes}分钟后自动取消
 
 📋 支持的操作:
+
 • 直接发送文件 - 上传文件
+
 • 直接发送图片 - 上传图片
+
+• /ol upload 路径 - 切换上传目标目录
+
 • /ol upload cancel - 取消上传模式
+
 • /ol ls - 查看当前目录"""
-            yield event.plain_result(upload_text)
-            async def auto_cancel_upload():
-                await asyncio.sleep(600)
-                upload_state = self._get_user_upload_state(user_id)
-                if upload_state["waiting"]:
-                    self._set_user_upload_waiting(user_id, False)
-                    logger.info(f"用户 {user_id} 上传模式已自动取消（超时10分钟）")
-            asyncio.create_task(auto_cancel_upload())
-        else:
-            yield event.plain_result("❌ 未知操作，支持: /ol upload 或 /ol upload cancel")
+        yield event.plain_result(upload_text)
+        async def auto_cancel_upload():
+            await asyncio.sleep(upload_timeout_minutes * 60)
+            upload_state = self._get_user_upload_state(upload_state_key)
+            if upload_state["waiting"] and upload_state.get("target_path") == target_path:
+                self._set_user_upload_waiting(upload_state_key, False)
+                logger.info(f"用户 {user_id} 在会话 {upload_state_key} 的上传模式已自动取消（超时{upload_timeout_minutes}分钟）")
+        asyncio.create_task(auto_cancel_upload())
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def handle_file_message(self, event: AstrMessageEvent):
         """处理文件消息"""
         if not isinstance(event, AstrMessageEvent): return
+
+        if not self._is_regular_message_event(event):
+            return
+
+        messages = event.get_messages()
+        file_components = [msg for msg in messages if isinstance(msg, (File, Image))]
+        if not file_components:
+            return
         
         user_id = event.get_sender_id()
-        upload_state = self._get_user_upload_state(user_id)
+        upload_state_key = self._get_upload_state_key(event)
+        upload_state = self._get_user_upload_state(upload_state_key)
         if not upload_state["waiting"]: return
         
         user_config = self.get_user_config(user_id)
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息")
-            self._set_user_upload_waiting(user_id, False)
+            self._set_user_upload_waiting(upload_state_key, False)
             return
 
-        target_path = upload_state["target_path"]
-        messages = event.get_messages()
-        file_components = [msg for msg in messages if isinstance(msg, (File, Image))]
-
-        if not file_components:
-            yield event.plain_result("❌ 未检测到文件或图片，请发送文件进行上传")
-            return
         file_component = file_components[0]
         if isinstance(file_component, Image):
             async for result in self._upload_image(event, file_component, user_config):
@@ -1611,7 +1802,8 @@ class OpenlistPlugin(Star):
                         async with session.get(download_url) as resp:
                             if resp.status == 200:
                                 with open(temp_file_path, "wb") as f:
-                                    f.write(await resp.read())
+                                    async for chunk in resp.content.iter_chunked(1024 * 1024):
+                                        f.write(chunk)
                             else:
                                 yield event.plain_result(f"❌ 下载文件失败: HTTP {resp.status}")
                                 return
@@ -1837,8 +2029,10 @@ class OpenlistPlugin(Star):
      - 示例: `/ol rm 4`
      - 示例: `/ol rm /tmp/old_file.txt`
 
-📤 `/ol upload [cancel]`
+📤 `/ol upload [路径|cancel]`
    - `/ol upload`: 在当前目录开启上传模式。
+   - `/ol upload /目标目录`: 在指定目录开启上传模式。
+   - `/ol upload 子目录`: 在当前目录下的子目录开启上传模式。
    - `/ol upload cancel`: 取消上传。
    - `使用`: 开启后，直接向机器人发送文件或图片即可。
 

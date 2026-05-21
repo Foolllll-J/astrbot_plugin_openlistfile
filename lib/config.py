@@ -30,6 +30,7 @@ class UserConfigManager:
             "cache_duration": 300,
             "max_download_size": 50,
             "max_upload_size": 100,
+            "upload_mode_timeout": 10,
             "backup_allowed_extensions": "",
             "backup_max_size": 0,
             "setup_completed": False,
@@ -86,6 +87,7 @@ class GlobalConfigManager:
             "cache_duration": 300,
             "max_download_size": 50,
             "max_upload_size": 100,
+            "upload_mode_timeout": 10,
             "autobackup_groups": [], # 启用自动备份的群号列表
             "backup_allowed_extensions": "",
             "backup_max_size": 0,

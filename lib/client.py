@@ -1,8 +1,119 @@
 import os
+import asyncio
+import socket
+import time
 import aiohttp
 from typing import List, Dict, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from astrbot.api import logger
+
+
+class ProgressFilePayload(aiohttp.Payload):
+    """带进度日志的文件上传载荷，保留明确的 Content-Length。"""
+
+    def __init__(self, file_path: str, filename: str):
+        super().__init__(None, content_type="application/octet-stream")
+        self.file_path = file_path
+        self._filename = filename
+        self.file_size = os.path.getsize(file_path)
+        self._transport_logged = False
+
+    @property
+    def size(self):
+        return self.file_size
+
+    def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
+        return f"<streaming file payload filename={self._filename!r} size={self.file_size}>"
+
+    async def write(self, writer):
+        uploaded = 0
+        last_logged = 0
+        progress_step = 10 * 1024 * 1024
+        transport = getattr(writer, "transport", None)
+        started_at = time.monotonic()
+        if transport and not self._transport_logged:
+            local_addr = transport.get_extra_info("sockname")
+            peer_addr = transport.get_extra_info("peername")
+            ssl_object = transport.get_extra_info("ssl_object")
+            logger.info(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
+            self._transport_logged = True
+        with open(self.file_path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                uploaded += len(chunk)
+                await writer.write(chunk)
+                if uploaded == len(chunk) or uploaded - last_logged >= progress_step or uploaded == self.file_size:
+                    elapsed = max(time.monotonic() - started_at, 0.001)
+                    speed = uploaded / 1024 / 1024 / elapsed
+                    buffer_size = transport.get_write_buffer_size() if transport else None
+                    logger.info(
+                        f"上传进度: {self._filename} {uploaded}/{self.file_size} bytes 已写入连接 "
+                        f"speed={speed:.2f}MB/s write_buffer={buffer_size}"
+                    )
+                    last_logged = uploaded
+                await asyncio.sleep(0)
+        elapsed = max(time.monotonic() - started_at, 0.001)
+        logger.info(
+            f"上传请求体写入完成: {self._filename} {uploaded}/{self.file_size} bytes "
+            f"elapsed={elapsed:.2f}s avg_speed={uploaded / 1024 / 1024 / elapsed:.2f}MB/s"
+        )
+
+
+class ProgressStreamPayload(aiohttp.Payload):
+    """从上游流读取并写入 OpenList；数据经过 AstrBot，不由 OpenList 直拉 URL。"""
+
+    def __init__(self, stream, filename: str, file_size: Optional[int] = None):
+        super().__init__(None, content_type="application/octet-stream")
+        self.stream = stream
+        self._filename = filename
+        self.file_size = file_size
+        self._transport_logged = False
+
+    @property
+    def size(self):
+        return self.file_size
+
+    def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
+        total = self.file_size if self.file_size is not None else "unknown"
+        return f"<streaming url payload filename={self._filename!r} size={total}>"
+
+    async def write(self, writer):
+        uploaded = 0
+        last_logged = 0
+        progress_step = 10 * 1024 * 1024
+        transport = getattr(writer, "transport", None)
+        started_at = time.monotonic()
+        if transport and not self._transport_logged:
+            local_addr = transport.get_extra_info("sockname")
+            peer_addr = transport.get_extra_info("peername")
+            ssl_object = transport.get_extra_info("ssl_object")
+            logger.info(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
+            self._transport_logged = True
+
+        async for chunk in self.stream:
+            if not chunk:
+                continue
+            uploaded += len(chunk)
+            await writer.write(chunk)
+            if uploaded == len(chunk) or uploaded - last_logged >= progress_step or (self.file_size and uploaded == self.file_size):
+                elapsed = max(time.monotonic() - started_at, 0.001)
+                speed = uploaded / 1024 / 1024 / elapsed
+                buffer_size = transport.get_write_buffer_size() if transport else None
+                total = self.file_size if self.file_size is not None else "unknown"
+                logger.info(
+                    f"上传进度: {self._filename} {uploaded}/{total} bytes 已写入连接 "
+                    f"speed={speed:.2f}MB/s write_buffer={buffer_size}"
+                )
+                last_logged = uploaded
+
+        elapsed = max(time.monotonic() - started_at, 0.001)
+        logger.info(
+            f"上传请求体写入完成: {self._filename} {uploaded}/{self.file_size or 'unknown'} bytes "
+            f"elapsed={elapsed:.2f}s avg_speed={uploaded / 1024 / 1024 / elapsed:.2f}MB/s"
+        )
+
 
 class OpenlistClient:
     """Openlist API 客户端"""
@@ -185,36 +296,152 @@ class OpenlistClient:
             if filename is None:
                 filename = os.path.basename(file_path)
 
-            upload_url = f"{self.base_url}/api/fs/put"
-
-            with open(file_path, "rb") as f:
-                file_data = f.read()
-
-            headers = {
-                "Content-Type": "application/octet-stream",
-                "File-Path": quote(f"{target_path.rstrip('/')}/{filename}", safe="/"),
-            }
-
-            if hasattr(self, "token") and self.token:
-                headers["Authorization"] = self.token
-
-            async with self.session.put(
-                upload_url, data=file_data, headers=headers
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if result.get("code") == 200:
-                        return True
-                    else:
-                        logger.error(f"上传失败，服务器返回错误 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 完整响应: {result}")
-                        return False
-                else:
-                    error_text = await response.text()
-                    logger.error(f"上传失败 - HTTP状态: {response.status}, 响应内容: {error_text}, 目标路径: {target_path}/{filename}")
-                    return False
+            file_size = os.path.getsize(file_path)
+            logger.info(f"开始流式上传文件: {filename}, 大小: {file_size} bytes, 目标: {target_path}")
+            payload = ProgressFilePayload(file_path, filename)
+            return await self._put_payload(payload, target_path, filename, f"local_file={file_path}")
 
         except Exception as e:
             logger.error(f"上传文件失败: {e}, 文件路径: {file_path}, 目标路径: {target_path}/{filename}", exc_info=True)
+            return False
+
+    async def upload_url_stream(
+        self, source_url: str, target_path: str, filename: str, file_size: Optional[int] = None
+    ) -> bool:
+        """从 URL 读取文件并流式 PUT 到 OpenList，OpenList 不会收到源 URL。"""
+        parsed_source = urlparse(source_url)
+        source_host = parsed_source.hostname or "unknown"
+        source_port = parsed_source.port or (443 if parsed_source.scheme == "https" else 80)
+
+        try:
+            logger.info(
+                f"开始 URL 流式中转上传: {filename}, source={source_host}:{source_port}, "
+                f"expected_size={file_size}, 目标: {target_path}"
+            )
+            if source_host != "unknown":
+                try:
+                    addrinfo = await asyncio.get_running_loop().getaddrinfo(
+                        source_host, source_port, type=socket.SOCK_STREAM
+                    )
+                    resolved = sorted({f"{item[4][0]}:{item[4][1]}" for item in addrinfo})
+                    logger.info(f"上游文件目标解析: {source_host}:{source_port} -> {', '.join(resolved)}")
+                except Exception as e:
+                    logger.warning(f"解析上游文件目标失败: {source_host}:{source_port}, err={e}")
+
+            timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=None)
+            async with self.session.get(source_url, timeout=timeout) as source_response:
+                content_length = source_response.headers.get("Content-Length")
+                content_type = source_response.headers.get("Content-Type")
+                logger.info(
+                    f"上游文件响应: HTTP {source_response.status}, source={source_host}, "
+                    f"content_length={content_length}, content_type={content_type}"
+                )
+                if source_response.status != 200:
+                    error_text = await source_response.text()
+                    logger.error(
+                        f"上游文件获取失败: HTTP {source_response.status}, source={source_host}, "
+                        f"响应内容: {error_text[:500]}"
+                    )
+                    return False
+
+                if content_length:
+                    try:
+                        upstream_size = int(content_length)
+                        if file_size is None or (file_size == 0 and upstream_size > 0):
+                            file_size = upstream_size
+                        elif file_size != upstream_size:
+                            logger.warning(
+                                f"上游文件大小与事件大小不一致: {filename}, "
+                                f"event_size={file_size}, upstream_content_length={upstream_size}"
+                            )
+                    except ValueError:
+                        logger.warning(f"上游 Content-Length 无效: {content_length}")
+
+                payload = ProgressStreamPayload(
+                    source_response.content.iter_chunked(1024 * 1024),
+                    filename,
+                    file_size,
+                )
+                return await self._put_payload(
+                    payload,
+                    target_path,
+                    filename,
+                    f"url_stream_source={source_host}, upstream_status={source_response.status}",
+                )
+
+        except Exception as e:
+            logger.error(
+                f"URL 流式中转上传失败: {e}, 文件: {filename}, source={source_host}, "
+                f"目标路径: {target_path}/{filename}",
+                exc_info=True,
+            )
+            return False
+
+    async def _put_payload(
+        self, payload: aiohttp.Payload, target_path: str, filename: str, source_desc: str = ""
+    ) -> bool:
+        """将任意 aiohttp payload PUT 到 OpenList。"""
+        upload_url = f"{self.base_url}/api/fs/put"
+        encoded_file_path = quote(f"{target_path.rstrip('/')}/{filename}", safe="/")
+        headers = {"File-Path": encoded_file_path}
+
+        if hasattr(self, "token") and self.token:
+            headers["Authorization"] = self.token
+
+        logger.info(
+            f"OpenList 上传参数: url={upload_url}, source={source_desc}, "
+            f"content_length={payload.size}, file_path_header={encoded_file_path}, "
+            f"auth={'yes' if headers.get('Authorization') else 'no'}"
+        )
+
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30)
+        logger.info(f"发起 OpenList PUT 上传请求: {upload_url}")
+        parsed_url = urlparse(upload_url)
+        host = parsed_url.hostname
+        port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+        if host:
+            try:
+                addrinfo = await asyncio.get_running_loop().getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                )
+                resolved = sorted({f"{item[4][0]}:{item[4][1]}" for item in addrinfo})
+                logger.info(f"OpenList 上传目标解析: {host}:{port} -> {', '.join(resolved)}")
+            except Exception as e:
+                logger.warning(f"解析 OpenList 上传目标失败: {host}:{port}, err={e}")
+
+        try:
+            request_started_at = time.monotonic()
+            async with self.session.put(
+                upload_url, data=payload, headers=headers, timeout=timeout
+            ) as response:
+                request_elapsed = time.monotonic() - request_started_at
+                logger.info(
+                    f"OpenList 上传响应: HTTP {response.status}, 文件: {filename}, "
+                    f"elapsed={request_elapsed:.2f}s"
+                )
+                if response.status == 200:
+                    result = await response.json()
+                    if result.get("code") == 200:
+                        logger.info(f"流式上传完成: {filename} -> {target_path}")
+                        return True
+                    logger.error(
+                        f"上传失败，服务器返回错误 - code: {result.get('code')}, "
+                        f"message: {result.get('message', '未知错误')}, 完整响应: {result}"
+                    )
+                    return False
+
+                error_text = await response.text()
+                logger.error(
+                    f"上传失败 - HTTP状态: {response.status}, 响应内容: {error_text}, "
+                    f"目标路径: {target_path}/{filename}"
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                f"OpenList PUT 请求失败: {e}, 文件: {filename}, source={source_desc}, "
+                f"目标路径: {target_path}/{filename}",
+                exc_info=True,
+            )
             return False
 
     async def mkdir(self, path: str) -> bool:

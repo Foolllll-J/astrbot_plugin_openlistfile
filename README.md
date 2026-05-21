@@ -75,6 +75,9 @@
 # 设置访问 Token（可选，优先级高于用户名密码）
 /ol config set token your_token
 
+# 设置上传模式持续时间（分钟，默认 10）
+/ol config set upload_mode_timeout 30
+
 # 测试连接
 /ol config test
 
@@ -99,7 +102,7 @@
 | `/ol search` | `/网盘 搜索` | `/ol search "关键词"` | 搜索文件 |
 | `/ol info` | `/网盘 信息` | `/ol info /path/file` | 查看文件/目录详细信息 |
 | `/ol download` | `/网盘 下载` | `/ol download 1` | 直接下载文件并发送 |
-| `/ol upload` | `/网盘 上传` | `/ol upload` | 开启/取消上传模式 |
+| `/ol upload` | `/网盘 上传` | `/ol upload /path` | 开启/取消上传模式，可指定上传目录 |
 | `/ol backup` | `/网盘 备份` | `/ol backup /path @群号` | 手动备份群文件 |
 | `/ol autobackup` | `/网盘 自动备份` | `/ol autobackup enable` | 配置自动备份 |
 | `/ol restore` | `/网盘 恢复` | `/ol restore /path @群号` | 从网盘恢复文件 |
@@ -176,6 +179,12 @@
 
 # 开始上传模式
 /ol upload
+
+# 上传到指定目录
+/ol upload /movies
+
+# 上传到当前目录下的子目录
+/ol upload clips
 
 # 在上传模式下直接发送文件或图片即可上传
 

@@ -96,11 +96,23 @@
                 "description": "最大上传文件大小(MB)",
                 "type": "int",
                 "slider": {
-                    "min": 1,
-                    "max": 1000,
+                    "min": 0,
+                    "max": 10240,
                     "step": 1
                 },
-                "default": 100
+                "default": 100,
+                "hint": "0 表示不限制。"
+            },
+            "upload_mode_timeout": {
+                "description": "上传模式持续时间(分钟)",
+                "type": "int",
+                "slider": {
+                    "min": 1,
+                    "max": 1440,
+                    "step": 1
+                },
+                "default": 10,
+                "hint": "开启上传模式后，超过该时间未完成上传会自动取消。"
             },
             "require_user_auth": {
                 "description": "要求用户认证",
