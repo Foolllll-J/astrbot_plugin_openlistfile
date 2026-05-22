@@ -1,5 +1,6 @@
 import asyncio
 import os
+import posixpath
 import time
 import chardet
 from typing import List, Dict, Optional
@@ -205,15 +206,50 @@ class OpenlistPlugin(Star):
             return f"group:{group_id}:user:{user_id}"
         return f"private:user:{user_id}"
 
-    def _resolve_target_path(self, user_id: str, path: str) -> str:
-        """将上传目标路径解析为 OpenList 绝对路径。"""
-        path = (path or "").strip()
-        if not path:
-            return self._get_user_navigation_state(user_id)["current_path"]
-        if path.startswith("/"):
-            return path.rstrip("/") or "/"
+    def _normalize_openlist_path(self, path: str) -> str:
+        """标准化 OpenList 路径，统一为以 / 开头的绝对路径。"""
+        normalized = (path or "").strip().replace("\\", "/")
+        if not normalized:
+            return "/"
+        if not normalized.startswith("/"):
+            normalized = "/" + normalized
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        normalized = posixpath.normpath(normalized)
+        if normalized in ("", "."):
+            return "/"
+        if not normalized.startswith("/"):
+            normalized = "/" + normalized
+        return normalized
+
+    def _resolve_target_path(self, user_id: str, path: str, default_to_current: bool = True) -> str:
+        """将目标路径解析为 OpenList 绝对路径，支持当前目录相对路径。"""
+        raw_path = (path or "").strip()
         current_path = self._get_user_navigation_state(user_id)["current_path"]
-        return f"{current_path.rstrip('/')}/{path}".rstrip("/") or "/"
+        if not isinstance(current_path, str) or not current_path.startswith("/"):
+            current_path = "/"
+
+        if not raw_path:
+            if default_to_current:
+                return self._normalize_openlist_path(current_path)
+            return "/"
+
+        if raw_path.startswith("/"):
+            return self._normalize_openlist_path(raw_path)
+
+        current_path = self._normalize_openlist_path(current_path)
+        return self._normalize_openlist_path(f"{current_path.rstrip('/')}/{raw_path}")
+
+    def _resolve_path_candidates(self, user_id: str, path: str, default_to_current: bool = True) -> List[str]:
+        """生成候选路径: 先当前目录相对路径，再尝试根目录路径（用于兼容旧用法）。"""
+        raw_path = (path or "").strip()
+        primary_path = self._resolve_target_path(user_id, raw_path, default_to_current=default_to_current)
+        candidates = [primary_path]
+        if raw_path and not raw_path.startswith("/"):
+            root_path = self._normalize_openlist_path(raw_path)
+            if root_path not in candidates:
+                candidates.append(root_path)
+        return candidates
 
     def _is_regular_message_event(self, event: AstrMessageEvent) -> bool:
         """过滤 notice、回调等非普通消息事件，避免上传模式误响应。"""
@@ -1085,23 +1121,24 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 未知的操作，支持: show, set, test, setup, clear_cache")
 
     @openlist_group.command("ls", alias=["列表", "直链"])
-    async def list_files(self, event: AstrMessageEvent, path: str = "/"):
+    async def list_files(self, event: AstrMessageEvent, path: str = ""):
         """列出文件和目录，或获取文件链接"""
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
-        target_path = path
+        path = (path or "").strip()
+        target_path = self._resolve_target_path(user_id, path)
+        path_candidates = [target_path]
         if path.isdigit():
             number = int(path)
             item = self._get_item_by_number(user_id, number)
             if item:
                 if item.get("is_dir", False):
-                    nav_state = self._get_user_navigation_state(user_id)
-                    current_path = nav_state["current_path"]
                     item_name = item.get("name", "")
-                    target_path = f"{current_path.rstrip('/')}/{item_name}"
+                    target_path = self._resolve_target_path(user_id, item_name)
+                    path_candidates = [target_path]
                 else:
                     async for result in self._get_and_send_download_link(event, item, user_config):
                         yield result
@@ -1109,24 +1146,30 @@ class OpenlistPlugin(Star):
             else:
                 yield event.plain_result(f"❌ 序号 {number} 无效，请使用 /ol ls 查看当前目录")
                 return
+        else:
+            path_candidates = self._resolve_path_candidates(user_id, path)
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
-                file_info = await client.get_file_info(target_path)
-                if file_info and not file_info.get("is_dir", False):
-                    async for result in self._get_and_send_download_link(event, file_info, user_config, full_path=target_path):
-                        yield result
-                    return
-                list_result = await client.list_files(target_path, per_page=0)
-                if list_result is not None:
-                    files = list_result.get("content") or []
-                    self._update_user_navigation_state(user_id, target_path, files)
-                    formatted_list = self._format_file_list(files, target_path, user_config, user_id)
-                    yield event.plain_result(formatted_list)
-                else:
-                    logger.warning(f"用户 {user_id} 无法访问路径: {target_path}")
-                    yield event.plain_result(f"❌ 无法访问路径: {target_path}")
+                for candidate_path in path_candidates:
+                    file_info = await client.get_file_info(candidate_path)
+                    if file_info and not file_info.get("is_dir", False):
+                        async for result in self._get_and_send_download_link(event, file_info, user_config, full_path=candidate_path):
+                            yield result
+                        return
+
+                    list_result = await client.list_files(candidate_path, per_page=0)
+                    if list_result is not None:
+                        files = list_result.get("content") or []
+                        self._update_user_navigation_state(user_id, candidate_path, files)
+                        formatted_list = self._format_file_list(files, candidate_path, user_config, user_id)
+                        yield event.plain_result(formatted_list)
+                        return
+
+                display_path = " / ".join(path_candidates)
+                logger.warning(f"用户 {user_id} 无法访问路径候选: {display_path}")
+                yield event.plain_result(f"❌ 无法访问路径: {display_path}")
         except Exception as e:
-            logger.error(f"用户 {user_id} 列出文件失败: {e}, 路径: {target_path}", exc_info=True)
+            logger.error(f"用户 {user_id} 列出文件失败: {e}, 路径候选: {path_candidates}", exc_info=True)
             yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("next", alias=["下一页"])
@@ -1210,6 +1253,7 @@ class OpenlistPlugin(Star):
     @openlist_group.command("info", alias=["信息"])
     async def file_info(self, event: AstrMessageEvent, path: str):
         """获取文件详细信息"""
+        path = (path or "").strip()
         if not path:
             yield event.plain_result("❌ 请提供文件路径")
             return
@@ -1218,9 +1262,16 @@ class OpenlistPlugin(Star):
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
+        path_candidates = self._resolve_path_candidates(user_id, path)
+        target_path = path_candidates[0]
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
-                file_info = await client.get_file_info(path)
+                file_info = None
+                for candidate_path in path_candidates:
+                    file_info = await client.get_file_info(candidate_path)
+                    if file_info:
+                        target_path = candidate_path
+                        break
                 if file_info:
                     name = file_info.get("name", "")
                     size = file_info.get("size", 0)
@@ -1230,24 +1281,26 @@ class OpenlistPlugin(Star):
                     info_text = f"📋 文件信息\n\n"
                     info_text += f"📄 名称: {name}\n"
                     info_text += f"📁 类型: {'目录' if is_dir else '文件'}\n"
-                    info_text += f"📍 路径: {path}\n"
+                    info_text += f"📍 路径: {target_path}\n"
                     if not is_dir: info_text += f"💾 大小: {self._format_file_size(size)}\n"
                     if modified: info_text += f"📅 修改时间: {modified.replace('T', ' ').split('.')[0]}\n"
                     if provider: info_text += f"🔗 存储: {provider}\n"
                     if not is_dir:
-                        download_url = await client.get_download_url(path)
+                        download_url = await client.get_download_url(target_path)
                         if download_url: info_text += f"\n🔗 下载链接:\n{download_url}"
                     yield event.plain_result(info_text)
                 else:
-                    logger.warning(f"用户 {user_id} 文件不存在: {path}")
-                    yield event.plain_result(f"❌ 文件不存在: {path}")
+                    display_path = " / ".join(path_candidates)
+                    logger.warning(f"用户 {user_id} 文件不存在: {display_path}")
+                    yield event.plain_result(f"❌ 文件不存在: {display_path}")
         except Exception as e:
-            logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径: {path}", exc_info=True)
+            logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径候选: {path_candidates}", exc_info=True)
             yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
 
     @openlist_group.command("download", alias=["下载"])
     async def get_download_link(self, event: AstrMessageEvent, path: str):
         """直接下载指定的文件"""
+        path = (path or "").strip()
         if not path:
             yield event.plain_result("❌ 请提供文件路径或序号")
             return
@@ -1272,17 +1325,21 @@ class OpenlistPlugin(Star):
                 yield event.plain_result(f"❌ 序号 {number} 无效。")
                 return
         else:
+            path_candidates = self._resolve_path_candidates(user_id, path)
             try:
                 async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
-                    file_info = await client.get_file_info(path)
-                    if file_info and not file_info.get("is_dir", False):
-                        item_to_download = file_info
-                        full_path_override = path
-                    else:
-                        yield event.plain_result(f"❌ 无法下载，文件不存在或路径为目录: {path}")
+                    for candidate_path in path_candidates:
+                        file_info = await client.get_file_info(candidate_path)
+                        if file_info and not file_info.get("is_dir", False):
+                            item_to_download = file_info
+                            full_path_override = candidate_path
+                            break
+                    if not item_to_download:
+                        display_path = " / ".join(path_candidates)
+                        yield event.plain_result(f"❌ 无法下载，文件不存在或路径为目录: {display_path}")
                         return
             except Exception as e:
-                logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径: {path}", exc_info=True)
+                logger.error(f"用户 {user_id} 获取文件信息失败: {e}, 路径候选: {path_candidates}", exc_info=True)
                 yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
                 return
 
@@ -1706,6 +1763,10 @@ class OpenlistPlugin(Star):
     @openlist_group.command("preview", alias=["预览"])
     async def preview_command(self, event: AstrMessageEvent, path: str):
         """预览文件内容"""
+        path = (path or "").strip()
+        if not path:
+            yield event.plain_result("❌ 请提供文件路径或序号")
+            return
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
         
@@ -1722,6 +1783,7 @@ class OpenlistPlugin(Star):
         # 获取文件信息
         item = None
         path_or_num = path
+        path_candidates = []
         if path_or_num.isdigit():
             number = int(path_or_num)
             item = self._get_item_by_number(user_id, number)
@@ -1729,21 +1791,25 @@ class OpenlistPlugin(Star):
                 if item.get("is_dir"):
                     yield event.plain_result("❌ 无法预览目录，请指定一个文件。")
                     return
-                nav_state = self._get_user_navigation_state(user_id)
-                current_path = nav_state["current_path"]
-                full_path = f"{current_path.rstrip('/')}/{item['name']}"
+                full_path = self._resolve_target_path(user_id, item["name"])
             else:
                 yield event.plain_result(f"❌ 序号 {number} 无效")
                 return
         else:
-            full_path = path_or_num
+            path_candidates = self._resolve_path_candidates(user_id, path_or_num)
+            full_path = path_candidates[0]
         
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 if not item:
-                    item = await client.get_file_info(full_path)
+                    for candidate_path in path_candidates:
+                        item = await client.get_file_info(candidate_path)
+                        if item:
+                            full_path = candidate_path
+                            break
                     if not item:
-                        yield event.plain_result(f"❌ 未找到文件: {full_path}")
+                        display_path = " / ".join(path_candidates)
+                        yield event.plain_result(f"❌ 未找到文件: {display_path}")
                         return
                     if item.get("is_dir"):
                         yield event.plain_result("❌ 无法预览目录，请指定一个文件。")
@@ -1857,6 +1923,7 @@ class OpenlistPlugin(Star):
     @openlist_group.command("rm", alias=["删除"])
     async def remove_command(self, event: AstrMessageEvent, path: str):
         """删除文件或文件夹"""
+        path = (path or "").strip()
         if not path:
             yield event.plain_result("❌ 请提供文件路径或序号")
             return
@@ -1875,18 +1942,20 @@ class OpenlistPlugin(Star):
             item = self._get_item_by_number(user_id, number)
             if item:
                 nav_state = self._get_user_navigation_state(user_id)
-                target_dir = nav_state["current_path"]
+                target_dir = self._normalize_openlist_path(nav_state["current_path"])
                 target_names = [item["name"]]
                 display_name = item["name"]
             else:
                 yield event.plain_result(f"❌ 序号 {number} 无效。")
                 return
         else:
-            # 处理绝对路径
-            full_path = path if path.startswith("/") else f"/{path}"
-            target_dir = os.path.dirname(full_path)
-            target_names = [os.path.basename(full_path)]
-            display_name = path
+            full_path = self._resolve_target_path(user_id, path)
+            if full_path == "/":
+                yield event.plain_result("❌ 不允许删除根目录。")
+                return
+            target_dir = posixpath.dirname(full_path) or "/"
+            target_names = [posixpath.basename(full_path)]
+            display_name = full_path
 
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
@@ -1939,6 +2008,7 @@ class OpenlistPlugin(Star):
     @openlist_group.command("mkdir", alias=["新建"])
     async def mkdir_command(self, event: AstrMessageEvent, name: str):
         """创建文件夹"""
+        name = (name or "").strip()
         if not name:
             yield event.plain_result("❌ 请提供文件夹名称或路径")
             return
@@ -1948,12 +2018,10 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
 
-        # 如果不是绝对路径，则在当前目录下创建
-        if not name.startswith("/"):
-            nav_state = self._get_user_navigation_state(user_id)
-            full_path = f"{nav_state['current_path'].rstrip('/')}/{name}"
-        else:
-            full_path = name
+        full_path = self._resolve_target_path(user_id, name)
+        if full_path == "/":
+            yield event.plain_result("❌ 不允许创建根目录。")
+            return
 
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
@@ -1962,9 +2030,10 @@ class OpenlistPlugin(Star):
                     yield event.plain_result(f"✅ 已创建文件夹: {name}")
                     # 如果在当前目录下创建，刷新列表
                     nav_state = self._get_user_navigation_state(user_id)
-                    current_path = nav_state["current_path"]
+                    current_path = self._normalize_openlist_path(nav_state["current_path"])
                     # 检查创建的文件夹是否在当前目录下（直接子目录）
-                    if os.path.dirname(full_path) == current_path.rstrip("/") or (current_path == "/" and os.path.dirname(full_path) == "/"):
+                    parent_path = posixpath.dirname(full_path) or "/"
+                    if parent_path == current_path.rstrip("/") or (current_path == "/" and parent_path == "/"):
                         result = await client.list_files(current_path)
                         if result:
                             files = result.get("content") or []
