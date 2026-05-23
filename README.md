@@ -78,6 +78,10 @@
 # 设置上传模式持续时间（分钟，默认 10）
 /ol config set upload_mode_timeout 30
 
+# 设置普通上传单文件重试：总尝试次数 3，每次间隔 5 秒
+/ol config set upload_retry_attempts 3
+/ol config set upload_retry_delay 5
+
 # 传输调优（单位：MB/秒）
 /ol config set upload_chunk_size_mb 4
 /ol config set upload_progress_step_mb 64

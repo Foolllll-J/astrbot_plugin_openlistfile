@@ -61,6 +61,8 @@ class OpenlistPlugin(Star):
             "max_download_size": "max_download_size",
             "max_upload_size": "max_upload_size",
             "upload_mode_timeout": "upload_mode_timeout",
+            "upload_retry_attempts": "upload_retry_attempts",
+            "upload_retry_delay": "upload_retry_delay",
             "upload_chunk_size_mb": "upload_chunk_size_mb",
             "upload_progress_step_mb": "upload_progress_step_mb",
             "upstream_connect_timeout": "upstream_connect_timeout",
@@ -198,6 +200,60 @@ class OpenlistPlugin(Star):
             user_config.get("fixed_base_directory", ""),
             transfer_config=self._get_transfer_config(user_config),
         )
+
+    def _get_retry_config(self, user_config: Dict, prefix: str) -> tuple:
+        """读取重试配置；attempts 包含首次尝试。"""
+        return (
+            self._get_positive_int_config(user_config, f"{prefix}_retry_attempts", 3),
+            self._get_positive_int_config(user_config, f"{prefix}_retry_delay", 5, minimum=0),
+        )
+
+    async def _upload_file_with_retry(
+        self,
+        client: OpenlistClient,
+        file_path: str,
+        target_path: str,
+        file_name: str,
+        user_config: Dict,
+    ) -> bool:
+        """本地文件上传自动重试。"""
+        attempts, retry_delay = self._get_retry_config(user_config, "upload")
+        for attempt in range(1, attempts + 1):
+            if await client.upload_file(file_path, target_path, file_name):
+                return True
+            logger.warning(f"上传文件 {file_name} 第 {attempt}/{attempts} 次失败。")
+            if attempt < attempts:
+                await asyncio.sleep(retry_delay)
+        return False
+
+    async def _upload_url_stream_with_retry(
+        self,
+        client: OpenlistClient,
+        source_url: str,
+        target_path: str,
+        file_name: str,
+        file_size: Optional[int],
+        user_config: Dict,
+        refresh_url=None,
+    ) -> bool:
+        """URL 中转上传自动重试；可在重试时刷新平台文件 URL。"""
+        attempts, retry_delay = self._get_retry_config(user_config, "upload")
+        current_url = source_url
+        for attempt in range(1, attempts + 1):
+            if attempt > 1 and callable(refresh_url):
+                try:
+                    refreshed_url = await refresh_url()
+                    if refreshed_url:
+                        current_url = refreshed_url
+                except Exception as e:
+                    logger.warning(f"刷新上传 URL 失败: {file_name}, attempt={attempt}/{attempts}, err={e}")
+
+            if current_url and await client.upload_url_stream(current_url, target_path, file_name, file_size):
+                return True
+            logger.warning(f"URL 中转上传 {file_name} 第 {attempt}/{attempts} 次失败。")
+            if attempt < attempts:
+                await asyncio.sleep(retry_delay)
+        return False
 
     def _get_extension_filter(self, user_config: Dict, key: str = "allowed_extensions") -> List[str]:
         """读取扩展名过滤配置；空列表表示不限制。"""
@@ -1032,6 +1088,7 @@ class OpenlistPlugin(Star):
         raw_file_id = None
         raw_file_size = None
         raw_file_url = None
+        raw_busid = 0
         component_name = getattr(file_component, "name", None)
         component_url = getattr(file_component, "url", None)
         component_file = getattr(file_component, "file_", None)
@@ -1045,6 +1102,7 @@ class OpenlistPlugin(Star):
                     raw_file_id = data_dict.get("file_id")
                     raw_file_size = data_dict.get("file_size")
                     raw_file_url = data_dict.get("url")
+                    raw_busid = data_dict.get("busid", 0)
                     if file_name:
                         break
 
@@ -1088,8 +1146,28 @@ class OpenlistPlugin(Star):
                     f"用户 {user_id} 使用 URL 流式中转上传: name={file_name}, "
                     f"size={raw_file_size_int}, target={target_path}, openlist_url={user_config.get('openlist_url')}"
                 )
+                async def refresh_upload_url():
+                    group_id = getattr(event.message_obj, "group_id", None)
+                    if not group_id or not raw_file_id:
+                        return None
+                    url_res = await event.bot.api.call_action(
+                        "get_group_file_url",
+                        group_id=int(group_id),
+                        file_id=raw_file_id,
+                        busid=raw_busid or 0,
+                    )
+                    return url_res.get("url") if isinstance(url_res, dict) else None
+
                 async with self._create_openlist_client(user_config) as client:
-                    success = await client.upload_url_stream(upload_url, target_path, file_name, raw_file_size_int)
+                    success = await self._upload_url_stream_with_retry(
+                        client,
+                        upload_url,
+                        target_path,
+                        file_name,
+                        raw_file_size_int,
+                        user_config,
+                        refresh_url=refresh_upload_url,
+                    )
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
                         self.cache_manager.clear_cache(user_id)
@@ -1137,7 +1215,7 @@ class OpenlistPlugin(Star):
                     f"target={target_path}, openlist_url={user_config.get('openlist_url')}"
                 )
                 async with self._create_openlist_client(user_config) as client:
-                    success = await client.upload_file(file_path, target_path, file_name)
+                    success = await self._upload_file_with_retry(client, file_path, target_path, file_name, user_config)
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
                         self.cache_manager.clear_cache(user_id)
@@ -1461,7 +1539,7 @@ class OpenlistPlugin(Star):
                     return
                 yield event.plain_result(f"📤 开始上传图片: {filename}\n💾 大小: {self._format_file_size(file_size)}\n📂 目标: {target_path}")
                 async with self._create_openlist_client(user_config) as client:
-                    success = await client.upload_file(image_path, target_path, filename)
+                    success = await self._upload_file_with_retry(client, image_path, target_path, filename, user_config)
                     if success:
                         yield event.plain_result(f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
                         self.cache_manager.clear_cache(user_id)
@@ -1546,6 +1624,7 @@ class OpenlistPlugin(Star):
                 "max_display_files", "public_openlist_url",
                 "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
                 "enable_cache", "cache_duration", "max_download_size", "max_upload_size", "upload_mode_timeout",
+                "upload_retry_attempts", "upload_retry_delay",
                 "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
                 "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout",
                 "debug_transfer_logging", "debug_upload_logging",
@@ -1561,6 +1640,7 @@ class OpenlistPlugin(Star):
             if key in [
                 "max_display_files", "cache_duration", "backup_max_size", "max_preview_size",
                 "text_preview_length", "max_download_size", "max_upload_size", "upload_mode_timeout",
+                "upload_retry_attempts", "upload_retry_delay",
                 "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
                 "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout",
                 "backup_retry_attempts", "backup_retry_delay"
@@ -1590,6 +1670,12 @@ class OpenlistPlugin(Star):
                         return
                     if key == "upload_mode_timeout" and (value < 1):
                         yield event.plain_result("❌ upload_mode_timeout 必须大于0")
+                        return
+                    if key == "upload_retry_attempts" and value < 1:
+                        yield event.plain_result("❌ upload_retry_attempts 必须大于0")
+                        return
+                    if key == "upload_retry_delay" and value < 0:
+                        yield event.plain_result("❌ upload_retry_delay 必须大于等于0")
                         return
                     if key in ["upload_chunk_size_mb", "upload_progress_step_mb"] and value < 1:
                         yield event.plain_result(f"❌ {key} 必须大于0")

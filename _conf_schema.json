@@ -115,6 +115,18 @@
                 "default": 10,
                 "hint": "开启上传模式后，超过该时间未完成上传会自动取消。"
             },
+            "upload_retry_attempts": {
+                "description": "上传单文件尝试次数",
+                "type": "int",
+                "default": 3,
+                "hint": "普通上传失败时最多尝试次数，包含首次尝试。"
+            },
+            "upload_retry_delay": {
+                "description": "上传重试间隔(秒)",
+                "type": "int",
+                "default": 5,
+                "hint": "同一文件两次上传尝试之间的等待时间。"
+            },
             "upload_chunk_size_mb": {
                 "description": "上传分块大小(MB)",
                 "type": "int",
