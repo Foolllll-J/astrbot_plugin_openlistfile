@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import posixpath
 import time
@@ -42,7 +43,7 @@ class OpenlistPlugin(Star):
         """获取整合后的全局配置（WebUI + global_config.json）"""
         # 直接加载本地配置
         config = self.global_config_manager.load_config()
-        
+
         # 基础配置项映射：如果 WebUI 有值且本地是默认值，则使用 WebUI 的
         mapping = {
             "default_openlist_url": "openlist_url",
@@ -73,8 +74,10 @@ class OpenlistPlugin(Star):
             "autobackup_groups": "autobackup_groups",
             "backup_allowed_extensions": "backup_allowed_extensions",
             "backup_max_size": "backup_max_size",
+            "backup_retry_attempts": "backup_retry_attempts",
+            "backup_retry_delay": "backup_retry_delay",
         }
-        
+
         defaults = self.global_config_manager.default_config
         for webui_key, local_key in mapping.items():
             webui_val = self.get_webui_config(webui_key)
@@ -113,7 +116,7 @@ class OpenlistPlugin(Star):
             if isinstance(config.get(key), str):
                 config[key] = [ext.strip().lower() for ext in config[key].split(",") if ext.strip()]
                 config[key] = [ext if ext.startswith(".") else f".{ext}" for ext in config[key]]
-                
+
         return config
 
     def _get_size_limit_mb(self, user_config: Dict, key: str, default: int) -> int:
@@ -323,9 +326,9 @@ class OpenlistPlugin(Star):
         global_cfg = self.get_global_config()
         if not global_cfg.get("require_user_auth", True):
             return global_cfg
-            
+
         user_config = self.get_user_config_manager(user_id).load_config()
-        
+
         # 简单的合并：用户配置优先，如果用户配置为空则使用全局配置
         final_cfg = global_cfg.copy()
         for k, v in user_config.items():
@@ -344,7 +347,7 @@ class OpenlistPlugin(Star):
             # 只要用户设置了非默认值，就覆盖全局；允许 0/False/[] 这类有效配置值。
             if not is_default_value:
                 final_cfg[k] = v
-                
+
         return final_cfg
 
     def _validate_config(self, user_config: Dict) -> bool:
@@ -394,6 +397,53 @@ class OpenlistPlugin(Star):
         if group_id:
             return f"group:{group_id}:user:{user_id}"
         return f"private:user:{user_id}"
+
+    def _get_backup_retry_key(self, event: AstrMessageEvent) -> str:
+        """按会话和用户定位最近一次手动备份失败项。"""
+        user_id = event.get_sender_id()
+        message_obj = getattr(event, "message_obj", None)
+        group_id = getattr(message_obj, "group_id", None)
+        if group_id:
+            return f"group:{group_id}:user:{user_id}"
+        return f"private:user:{user_id}"
+
+    def _get_backup_retry_file(self, retry_key: str) -> str:
+        """返回备份失败清单临时文件路径。"""
+        safe_key = "".join(c if c.isalnum() or c in "._-" else "_" for c in retry_key)
+        retry_dir = os.path.join(StarTools.get_data_dir("openlist"), "backup_retry")
+        os.makedirs(retry_dir, exist_ok=True)
+        return os.path.join(retry_dir, f"{safe_key}.json")
+
+    def _load_backup_retry_state(self, retry_key: str) -> Optional[Dict]:
+        """读取最近一次备份失败清单。"""
+        retry_file = self._get_backup_retry_file(retry_key)
+        try:
+            if not os.path.exists(retry_file):
+                return None
+            with open(retry_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            return state if isinstance(state, dict) else None
+        except Exception as e:
+            logger.warning(f"读取备份失败清单失败: {retry_file}, err={e}")
+            return None
+
+    def _save_backup_retry_state(self, retry_key: str, state: Dict):
+        """写入备份失败清单临时文件。"""
+        retry_file = self._get_backup_retry_file(retry_key)
+        try:
+            with open(retry_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存备份失败清单失败: {retry_file}, err={e}")
+
+    def _delete_backup_retry_state(self, retry_key: str):
+        """删除备份失败清单临时文件。"""
+        retry_file = self._get_backup_retry_file(retry_key)
+        try:
+            if os.path.exists(retry_file):
+                os.remove(retry_file)
+        except OSError as e:
+            logger.warning(f"删除备份失败清单失败: {retry_file}, err={e}")
 
     def _normalize_openlist_path(self, path: str) -> str:
         """标准化 OpenList 路径，统一为以 / 开头的绝对路径。"""
@@ -613,7 +663,7 @@ class OpenlistPlugin(Star):
 
     def _format_file_list(self, files: List[Dict], current_path: str, user_config: Dict, user_id: str = None) -> str:
         """格式化文件列表或搜索结果"""
-        is_search_result = current_path.startswith("🔍 搜索") 
+        is_search_result = current_path.startswith("🔍 搜索")
         title = f"📁 {current_path}" if not is_search_result else current_path
 
         if not files: return f"{title}\n\n❌ 列表为空"
@@ -633,7 +683,7 @@ class OpenlistPlugin(Star):
         files_only_count = 0
         if not is_search_result:
             dirs_count = len([f for f in files if f.get("is_dir", False)])
-            files_only_count = total_items - dirs_count 
+            files_only_count = total_items - dirs_count
 
         for i, item in enumerate(items_to_display, start=start_index + 1):
             name = item.get("name", "")
@@ -811,6 +861,8 @@ class OpenlistPlugin(Star):
         target_path: str,
         user_config: Dict,
         group_id: str,
+        file_id: str = None,
+        busid: int = 0,
     ) -> None:
         """后台执行群文件自动备份，避免阻塞同一条消息上的其他处理器。"""
         async with self.autobackup_semaphore:
@@ -826,9 +878,29 @@ class OpenlistPlugin(Star):
                     if not await client.ensure_dir(target_path):
                         logger.error(f"❌ [自动备份] 创建目标目录失败: {target_path}")
                         return
-                    if file_url and file_size is not None:
-                        logger.info(f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}")
-                        success = await client.upload_url_stream(file_url, target_path, file_name, file_size)
+                    if (file_url or file_id) and file_size is not None:
+                        item = {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "file_size": file_size,
+                            "busid": busid,
+                        }
+                        retry_attempts = self._get_positive_int_config(user_config, "backup_retry_attempts", 3)
+                        retry_delay = self._get_positive_int_config(user_config, "backup_retry_delay", 5, minimum=0)
+                        if file_id:
+                            success, _ = await self._upload_group_file_with_retry(
+                                event.bot,
+                                client,
+                                int(group_id),
+                                item,
+                                target_path,
+                                retry_attempts,
+                                retry_delay,
+                                initial_url=file_url,
+                            )
+                        else:
+                            logger.info(f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}")
+                            success = await client.upload_url_stream(file_url, target_path, file_name, file_size)
                     else:
                         get_file_started_at = time.monotonic()
                         file_path = await file_component.get_file()
@@ -869,7 +941,7 @@ class OpenlistPlugin(Star):
         message_list = raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
         if not isinstance(message_list, list):
             return
-        
+
         # 遍历消息段寻找文件段
         for segment_dict in message_list:
             if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
@@ -878,33 +950,33 @@ class OpenlistPlugin(Star):
                 file_id = data_dict.get("file_id")
                 file_size = data_dict.get("file_size")
                 file_url = data_dict.get("url")
-                
+
                 if not file_name or not file_id:
                     continue
-                
+
                 # 转换文件大小
                 if isinstance(file_size, str):
                     try:
                         file_size = int(file_size)
                     except ValueError:
                         file_size = None
-                
+
                 # 命中文件，开始执行自动备份检查
                 group_id = str(event.message_obj.group_id)
                 if not group_id:
                     return
-                
+
                 global_cfg = self.get_global_config()
                 target_path = self._get_autobackup_target_path(global_cfg, group_id)
-                
+
                 if not target_path:
                     return
-                
+
                 user_config = global_cfg
                 if not self._validate_config(user_config):
                     logger.warning(f"⚠️ [自动备份] 群 {group_id} 触发了自动备份，但未找到有效的 Openlist 配置。")
                     return
-                
+
                 # 预先检查大小限制 (从事件数据获取)
                 if file_size is not None:
                     max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
@@ -918,10 +990,10 @@ class OpenlistPlugin(Star):
                     if isinstance(msg, File):
                         file_component = msg
                         break
-                
+
                 if not file_component:
                     return
-                
+
                 # 使用配置中的备份过滤条件
                 allowed_exts = self._get_extension_filter(user_config, "backup_allowed_extensions")
                 if allowed_exts:
@@ -929,7 +1001,7 @@ class OpenlistPlugin(Star):
                     if ext not in allowed_exts:
                         logger.info(f"⏭️ [自动备份] 文件 {file_name} 后缀 {ext} 不在允许范围内，跳过。")
                         return
-                
+
                 task_user_config = dict(user_config)
                 asyncio.create_task(
                     self._run_group_file_autobackup(
@@ -941,6 +1013,8 @@ class OpenlistPlugin(Star):
                         target_path=target_path,
                         user_config=task_user_config,
                         group_id=group_id,
+                        file_id=file_id,
+                        busid=data_dict.get("busid", 0),
                     )
                 )
                 logger.debug(f"🧵 [自动备份] 已转入后台任务: group={group_id}, file={file_name}")
@@ -1092,17 +1166,17 @@ class OpenlistPlugin(Star):
                 res = await bot.api.call_action("get_group_root_files", group_id=group_id)
             else:
                 res = await bot.api.call_action("get_group_files_by_folder", group_id=group_id, folder_id=folder_id)
-            
+
             if not res:
                 return []
-            
+
             files = res.get("files", [])
             folders = res.get("folders", [])
-            
+
             for f in files:
                 f["relative_path"] = f"{current_path}/{f['file_name']}".lstrip("/")
                 all_files.append(f)
-                
+
             for folder in folders:
                 sub_folder_id = folder.get("folder_id")
                 sub_folder_name = folder.get("folder_name")
@@ -1111,7 +1185,7 @@ class OpenlistPlugin(Star):
                         bot, group_id, sub_folder_id, f"{current_path}/{sub_folder_name}"
                     )
                     all_files.extend(sub_files)
-                    
+
             return all_files
         except Exception as e:
             logger.error(f"递归获取群 {group_id} 文件失败: {e}", exc_info=True)
@@ -1120,56 +1194,167 @@ class OpenlistPlugin(Star):
     async def _backup_group_files(self, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict):
         """执行群文件备份"""
         bot = event.bot
-        async for result in self._do_backup_logic(bot, event, group_id, target_path, user_config):
+        async for result in self._do_backup_logic(
+            bot,
+            event,
+            group_id,
+            target_path,
+            user_config,
+            retry_key=self._get_backup_retry_key(event),
+        ):
             yield result
 
-    async def _do_backup_logic(self, bot, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict, is_auto: bool = False):
-        """核心备份逻辑，支持手动和自动备份"""
-        if not is_auto:
-            yield event.plain_result(f"🔍 正在扫描群 {group_id} 的所有文件，请稍候...")
-        
-        all_items = await self._get_group_files_recursive(bot, group_id)
-        if not all_items:
-            if not is_auto:
-                yield event.plain_result("❌ 未找到任何群文件或获取失败。")
+    async def _retry_last_backup(self, event: AstrMessageEvent, user_config: Dict):
+        """重试最近一次手动备份失败项。"""
+        retry_key = self._get_backup_retry_key(event)
+        retry_state = self._load_backup_retry_state(retry_key)
+        if not retry_state or not retry_state.get("items"):
+            yield event.plain_result("💡 当前会话没有可重试的备份失败项。")
             return
-            
-        allowed_exts = self._get_extension_filter(user_config, "backup_allowed_extensions")
-        max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
-        max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
-        
-        filtered_items = []
-        for item in all_items:
-            name = item.get("file_name", "").lower()
-            size = item.get("file_size", 0)
-            
-            if allowed_exts:
-                ext = os.path.splitext(name)[1]
-                if ext not in allowed_exts:
+
+        group_id = retry_state["group_id"]
+        target_path = retry_state["target_path"]
+        failed_items = retry_state["items"]
+        self._delete_backup_retry_state(retry_key)
+        yield event.plain_result(
+            f"🔁 开始重试上次备份失败的 {len(failed_items)} 个文件\n"
+            f"📂 目标: {target_path}"
+        )
+        async for result in self._do_backup_logic(
+            event.bot,
+            event,
+            group_id,
+            target_path,
+            user_config,
+            is_auto=False,
+            items_override=failed_items,
+            retry_key=retry_key,
+            is_retry=True,
+        ):
+            yield result
+
+    async def _upload_group_file_with_retry(
+        self,
+        bot,
+        client,
+        group_id: int,
+        item: Dict,
+        target_dir: str,
+        retry_attempts: int,
+        retry_delay: int,
+        initial_url: str = None,
+    ) -> tuple:
+        """获取群文件 URL 并上传；失败时重新获取 URL 后重试。"""
+        file_id = item.get("file_id")
+        file_name = item.get("file_name")
+        busid = item.get("busid", 0)
+        upload_size = item.get("file_size")
+        try:
+            upload_size = int(upload_size) if upload_size is not None else None
+        except (TypeError, ValueError):
+            upload_size = None
+
+        attempts = max(1, retry_attempts)
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt == 1 and initial_url:
+                    download_url = initial_url
+                else:
+                    url_res = await bot.api.call_action(
+                        "get_group_file_url",
+                        group_id=group_id,
+                        file_id=file_id,
+                        busid=busid,
+                    )
+                    download_url = url_res.get("url") if isinstance(url_res, dict) else None
+                if not download_url:
+                    reason = "无法获取群文件下载 URL"
+                    logger.warning(f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason}")
+                else:
+                    logger.info(
+                        f"🚀 [群备份] 使用 URL 流式中转: {file_name}, "
+                        f"size={upload_size}, target={target_dir}, attempt={attempt}/{attempts}"
+                    )
+                    if await client.upload_url_stream(download_url, target_dir, file_name, upload_size):
+                        return True, ""
+                    reason = "URL 流式中转上传失败"
+                    logger.warning(f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason}")
+            except Exception as e:
+                reason = str(e)
+                logger.error(f"备份文件 {file_name} 第 {attempt}/{attempts} 次异常: {e}", exc_info=True)
+
+            if attempt < attempts:
+                await asyncio.sleep(max(0, retry_delay))
+
+        return False, reason
+
+    async def _do_backup_logic(
+        self,
+        bot,
+        event: AstrMessageEvent,
+        group_id: int,
+        target_path: str,
+        user_config: Dict,
+        is_auto: bool = False,
+        items_override: Optional[List[Dict]] = None,
+        retry_key: str = None,
+        is_retry: bool = False,
+    ):
+        """核心备份逻辑，支持手动和自动备份"""
+        if not is_auto and not is_retry:
+            yield event.plain_result(f"🔍 正在扫描群 {group_id} 的所有文件，请稍候...")
+
+        if items_override is not None:
+            filtered_items = list(items_override)
+        else:
+            all_items = await self._get_group_files_recursive(bot, group_id)
+            if not all_items:
+                if not is_auto:
+                    yield event.plain_result("❌ 未找到任何群文件或获取失败。")
+                return
+
+            allowed_exts = self._get_extension_filter(user_config, "backup_allowed_extensions")
+            max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
+            max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
+
+            filtered_items = []
+            for item in all_items:
+                name = item.get("file_name", "").lower()
+                size = item.get("file_size", 0)
+
+                if allowed_exts:
+                    ext = os.path.splitext(name)[1]
+                    if ext not in allowed_exts:
+                        continue
+
+                if max_size > 0 and size > max_size:
                     continue
-            
-            if max_size > 0 and size > max_size:
-                continue
-                
-            filtered_items.append(item)
-            
+
+                filtered_items.append(item)
+
         if not filtered_items:
             if not is_auto:
-                yield event.plain_result("⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。")
+                message = "⚠️ 没有可重试的失败项。" if is_retry else "⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。"
+                yield event.plain_result(message)
             return
-            
+
         total = len(filtered_items)
-        if not is_auto:
+        if is_retry:
+            logger.info(f"🔁 [群备份] 开始重试 {total} 个失败文件，目标路径: {target_path}")
+        elif not is_auto:
             yield event.plain_result(f"📦 扫描完成，共发现 {total} 个文件需要备份。\n🚀 开始备份到 Openlist: {target_path}")
         else:
             logger.info(f"🚀 [自动备份] 发现 {total} 个新文件，准备备份到群 {group_id} 的目标路径: {target_path}")
-        
+
         success_count = 0
         fail_count = 0
+        failed_items = []
+        retry_attempts = self._get_positive_int_config(user_config, "backup_retry_attempts", 3)
+        retry_delay = self._get_positive_int_config(user_config, "backup_retry_delay", 5, minimum=0)
 
         async with self._create_openlist_client(user_config) as client:
             semaphore = asyncio.Semaphore(3)
-            
+
             async def upload_task(item, idx):
                 nonlocal success_count, fail_count
                 async with semaphore:
@@ -1178,48 +1363,66 @@ class OpenlistPlugin(Star):
                     rel_path = item.get("relative_path")
                     file_dir = os.path.dirname(rel_path)
                     target_dir = f"{target_path.rstrip('/')}/{file_dir}".rstrip("/")
-                    
+
                     try:
                         if not await client.ensure_dir(target_dir or target_path):
                             fail_count += 1
+                            failed_items.append(dict(item))
                             return
-                            
-                        url_res = await bot.api.call_action("get_group_file_url", group_id=group_id, file_id=file_id, busid=item.get("busid", 0))
-                        download_url = url_res.get("url")
-                        if not download_url:
-                            fail_count += 1
-                            return
-
-                        upload_size = item.get("file_size")
-                        try:
-                            upload_size = int(upload_size) if upload_size is not None else None
-                        except (TypeError, ValueError):
-                            upload_size = None
 
                         target_dir = target_dir or "/"
-                        logger.info(
-                            f"🚀 [群备份] 使用 URL 流式中转: {file_name}, "
-                            f"size={upload_size}, target={target_dir}"
+                        up_res, reason = await self._upload_group_file_with_retry(
+                            bot,
+                            client,
+                            group_id,
+                            item,
+                            target_dir,
+                            retry_attempts,
+                            retry_delay,
                         )
-                        up_res = await client.upload_url_stream(download_url, target_dir, file_name, upload_size)
                         if up_res:
                             success_count += 1
                         else:
                             fail_count += 1
+                            failed_item = dict(item)
+                            failed_item["_backup_fail_reason"] = reason
+                            failed_items.append(failed_item)
                     except Exception as e:
                         logger.error(f"备份文件 {file_name} 失败: {e}")
                         fail_count += 1
-            
+                        failed_item = dict(item)
+                        failed_item["_backup_fail_reason"] = str(e)
+                        failed_items.append(failed_item)
+
             batch_size = 5
             for i in range(0, total, batch_size):
                 batch_tasks = [upload_task(item, j) for j, item in enumerate(filtered_items[i:i+batch_size], start=i)]
                 await asyncio.gather(*batch_tasks)
                 logger.info(f"⏳ 备份进度: {min(i+batch_size, total)}/{total} (成功: {success_count}, 失败: {fail_count})")
-                
+
         if not is_auto:
             if success_count:
                 self.cache_manager.clear_cache()
-            yield event.plain_result(f"✅ 备份任务结束!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n📂 目标: {target_path}")
+            if retry_key:
+                if failed_items:
+                    self._save_backup_retry_state(
+                        retry_key,
+                        {
+                            "group_id": group_id,
+                            "target_path": target_path,
+                            "items": failed_items,
+                            "timestamp": time.time(),
+                        },
+                    )
+                else:
+                    self._delete_backup_retry_state(retry_key)
+            retry_hint = "\n💡 发送 /ol backup retry 可只重试失败项。" if failed_items else ""
+            yield event.plain_result(
+                f"✅ 备份任务结束!\n"
+                f"📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n"
+                f"📂 目标: {target_path}"
+                f"{retry_hint}"
+            )
         else:
             if success_count:
                 self.cache_manager.clear_cache()
@@ -1339,26 +1542,28 @@ class OpenlistPlugin(Star):
             user_manager = self.get_user_config_manager(user_id)
             user_config = user_manager.load_config()
             valid_keys = [
-                "openlist_url", "username", "password", "token", 
-                "max_display_files", "public_openlist_url", 
+                "openlist_url", "username", "password", "token",
+                "max_display_files", "public_openlist_url",
                 "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
                 "enable_cache", "cache_duration", "max_download_size", "max_upload_size", "upload_mode_timeout",
                 "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
                 "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout",
                 "debug_transfer_logging", "debug_upload_logging",
-                "backup_default_path", "backup_allowed_extensions", "backup_max_size"
+                "backup_default_path", "backup_allowed_extensions", "backup_max_size",
+                "backup_retry_attempts", "backup_retry_delay"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
             if key == "debug_upload_logging":
                 key = "debug_transfer_logging"
-            
+
             if key in [
                 "max_display_files", "cache_duration", "backup_max_size", "max_preview_size",
                 "text_preview_length", "max_download_size", "max_upload_size", "upload_mode_timeout",
                 "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
-                "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout"
+                "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout",
+                "backup_retry_attempts", "backup_retry_delay"
             ]:
                 try:
                     value = int(value)
@@ -1370,6 +1575,12 @@ class OpenlistPlugin(Star):
                         return
                     if key == "backup_max_size" and (value < 0):
                         yield event.plain_result("❌ backup_max_size 必须大于等于0")
+                        return
+                    if key == "backup_retry_attempts" and value < 1:
+                        yield event.plain_result("❌ backup_retry_attempts 必须大于0")
+                        return
+                    if key == "backup_retry_delay" and value < 0:
+                        yield event.plain_result("❌ backup_retry_delay 必须大于等于0")
                         return
                     if key == "max_download_size" and (value < 0):
                         yield event.plain_result("❌ max_download_size 必须大于等于0")
@@ -1406,12 +1617,12 @@ class OpenlistPlugin(Star):
                         value = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
                     # 确保后缀带点
                     value = [ext if ext.startswith(".") else f".{ext}" for ext in value]
-            
+
             user_config[key] = value
             if key == "openlist_url" and value:
                 user_config["setup_completed"] = True
             user_manager.save_config(user_config)
-            
+
             display_value = "***" if key in ["password", "token"] else str(value)
             yield event.plain_result(f"✅ 已为用户 {event.get_sender_name()} 设置 {key} = {display_value}")
         elif action == "test":
@@ -1571,7 +1782,7 @@ class OpenlistPlugin(Star):
             async with self._create_openlist_client(user_config) as client:
                 files = await client.search_files(keyword, path)
                 if files:
-                    search_title = f'🔍 搜索 "{keyword}"' 
+                    search_title = f'🔍 搜索 "{keyword}"'
                     self._update_user_navigation_state(user_id, search_title, files)
 
                     # 使用通用的列表格式化函数显示第一页
@@ -1792,12 +2003,12 @@ class OpenlistPlugin(Star):
         file_components = [msg for msg in messages if isinstance(msg, (File, Image))]
         if not file_components:
             return
-        
+
         user_id = event.get_sender_id()
         upload_state_key = self._get_upload_state_key(event)
         upload_state = self._get_user_upload_state(upload_state_key)
         if not upload_state["waiting"]: return
-        
+
         user_config = self.get_user_config(user_id)
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息")
@@ -1820,10 +2031,17 @@ class OpenlistPlugin(Star):
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
-            
+
+        arg1 = (arg1 or "").strip()
+        arg2 = (arg2 or "").strip()
+        if arg1.lower() in ("retry", "重试") or arg2.lower() in ("retry", "重试"):
+            async for result in self._retry_last_backup(event, user_config):
+                yield result
+            return
+
         target_path_arg = None
         target_group_id = 0
-        
+
         # 1. 智能解析参数
         for arg in [arg1, arg2]:
             if not arg: continue
@@ -1838,7 +2056,7 @@ class OpenlistPlugin(Star):
             else:
                 yield event.plain_result(f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。")
                 return
-        
+
         # 2. 确定群号 (手动指定优先，否则用当前群)
         if not target_group_id:
             if event.message_obj.group_id:
@@ -1851,7 +2069,7 @@ class OpenlistPlugin(Star):
             target_path_arg or user_config.get("backup_default_path", "/backup/group_{group_id}"),
             target_group_id,
         )
-                
+
         async for result in self._backup_group_files(event, target_group_id, target_path, user_config):
             yield result
 
@@ -1898,10 +2116,10 @@ class OpenlistPlugin(Star):
             ])
             yield event.plain_result("\n".join(lines))
             return
-        
+
         target_gid = None
         target_path = None
-        
+
         # 1. 智能解析参数: 路径必须以 / 开头，群号必须以 @ 开头
         for arg in [arg1, arg2]:
             if not arg: continue
@@ -1912,7 +2130,7 @@ class OpenlistPlugin(Star):
             else:
                 yield event.plain_result(f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。")
                 return
-        
+
         # 2. 确定群号 (手动指定优先，否则用当前群)
         if not target_gid:
             if event.message_obj.group_id:
@@ -1929,7 +2147,7 @@ class OpenlistPlugin(Star):
                 target_path or global_cfg.get("autobackup_default_path", "/backup/group_{group_id}"),
                 target_gid,
             )
-                
+
             new_entry = f"{target_gid}:{target_path}"
             # 过滤掉旧的该群配置
             new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]
@@ -1937,7 +2155,7 @@ class OpenlistPlugin(Star):
             local_cfg["autobackup_groups"] = new_groups
             self.global_config_manager.save_config(local_cfg)
             yield event.plain_result(f"✅ 群 {target_gid} 自动备份已开启 -> {target_path}")
-            
+
         elif action == "disable":
             # disable 只需要群号，忽略路径
             new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]
@@ -1971,23 +2189,23 @@ class OpenlistPlugin(Star):
             else:
                 yield event.plain_result(f"⚠️ 无法识别目标参数 '{target}'。群号请以 @ 开头。")
                 return
-        
+
         # 如果未指定群号，尝试获取当前会话群号
         if not target_group_id:
             if event.message_obj.group_id:
                 target_group_id = int(event.message_obj.group_id)
-        
+
         is_group = target_group_id is not None
         target_desc = f"群 {target_group_id}" if is_group else "私聊会话"
-        
+
         yield event.plain_result(f"🚀 正在启动恢复任务...\n📂 来源路径: {path}\n🎯 目标: {target_desc}")
-        
+
         try:
             async with self._create_openlist_client(user_config) as client:
                 # 递归搜集文件
                 files_to_restore = []
                 base_path = path.rstrip('/')
-                
+
                 async def collect(current_path):
                     res = await client.list_files(current_path, per_page=0)
                     if not res: return
@@ -2001,29 +2219,29 @@ class OpenlistPlugin(Star):
                             rel = full_item_path[len(base_path):].lstrip('/')
                             item["relative_path"] = rel
                             files_to_restore.append(item)
-                
+
                 # 检查路径是否存在及类型
                 file_info = await client.get_file_info(path)
                 if not file_info:
                     yield event.plain_result(f"❌ 路径不存在: {path}")
                     return
-                
+
                 if file_info.get("is_dir"):
                     await collect(base_path)
                 else:
                     file_info["full_path"] = path
                     file_info["relative_path"] = file_info["name"]
                     files_to_restore.append(file_info)
-                
+
                 if not files_to_restore:
                     yield event.plain_result(f"📂 路径下没有可恢复的文件。")
                     return
-                
+
                 total = len(files_to_restore)
                 yield event.plain_result(f"📦 找到 {total} 个文件，开始下载并发送...")
-                
+
                 created_folders = {} # {folder_name: folder_id}
-                
+
                 # 如果是群组，预先获取根目录下的文件夹，避免重复创建并获取正确的 ID
                 if is_group:
                     try:
@@ -2038,7 +2256,7 @@ class OpenlistPlugin(Star):
                 fail_count = 0
                 max_download_size_mb = self._get_size_limit_mb(user_config, "max_download_size", 50)
                 max_download_size = max_download_size_mb * 1024 * 1024
-                
+
                 downloads_dir = os.path.join(StarTools.get_data_dir("openlist"), "downloads")
                 os.makedirs(downloads_dir, exist_ok=True)
 
@@ -2046,7 +2264,7 @@ class OpenlistPlugin(Star):
                     file_name = item["name"]
                     full_path = item["full_path"]
                     rel_path = item["relative_path"]
-                    
+
                     try:
                         if not self._is_extension_allowed(file_name, user_config):
                             logger.info(f"跳过恢复文件 {file_name}: 后缀不在允许范围内。")
@@ -2076,10 +2294,10 @@ class OpenlistPlugin(Star):
                             logger.info(f"跳过恢复文件 {file_name}: 下载链接大小 {link_size} 超过限制 {max_download_size_mb}MB。")
                             fail_count += 1
                             continue
-                        
+
                         safe_filename = self._sanitize_filename(file_name)
                         temp_file_path = os.path.join(downloads_dir, f"restore_{self._unique_suffix()}_{safe_filename}")
-                        
+
                         async with aiohttp.ClientSession() as session:
                             async with session.get(download_url, headers=download_headers) as response:
                                 if response.status == 200:
@@ -2090,7 +2308,7 @@ class OpenlistPlugin(Star):
                                     logger.error(f"下载失败 {file_name}: HTTP {response.status}")
                                     fail_count += 1
                                     continue
-                        
+
                         # 2. 发送/上传文件
                         if is_group:
                             # 处理文件夹逻辑 (仅限一层)
@@ -2102,7 +2320,7 @@ class OpenlistPlugin(Star):
                                     try:
                                         # 接口不返回 ID，直接尝试创建
                                         await event.bot.api.call_action("create_group_file_folder", group_id=target_group_id, folder_name=folder_name)
-                                        
+
                                         # 创建后刷新列表以获取 ID
                                         root_files = await event.bot.api.call_action("get_group_root_files", group_id=target_group_id)
                                         if root_files and "folders" in root_files:
@@ -2121,15 +2339,15 @@ class OpenlistPlugin(Star):
                                                         break
                                         except:
                                             logger.error(f"无法获取群文件夹 {folder_name} 的 ID: {e}")
-                                
+
                                 folder_id = created_folders.get(folder_name)
-                            
+
                             # 上传群文件
                             try:
-                                await event.bot.api.call_action("upload_group_file", 
-                                    group_id=target_group_id, 
-                                    file=os.path.abspath(temp_file_path), 
-                                    name=file_name, 
+                                await event.bot.api.call_action("upload_group_file",
+                                    group_id=target_group_id,
+                                    file=os.path.abspath(temp_file_path),
+                                    name=file_name,
                                     folder=folder_id,
                                     folder_id=folder_id # 兼容不同平台的参数名
                                 )
@@ -2148,14 +2366,14 @@ class OpenlistPlugin(Star):
                             except Exception as e:
                                 logger.error(f"私聊发送文件 {file_name} 失败: {e}")
                                 fail_count += 1
-                                
+
                         # 3. 清理临时文件
                         if os.path.exists(temp_file_path):
                             os.remove(temp_file_path)
-                            
+
                         if i % 5 == 0 or i == total:
                             logger.info(f"🔄 恢复进度: {i}/{total} (成功: {success_count}, 失败: {fail_count})")
-                            
+
                     except Exception as e:
                         logger.error(f"处理文件 {file_name} 时发生错误: {e}")
                         fail_count += 1
@@ -2163,7 +2381,7 @@ class OpenlistPlugin(Star):
                             os.remove(temp_file_path)
 
                 yield event.plain_result(f"✅ 恢复任务完成!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n🎯 目标: {target_desc}")
-                
+
         except Exception as e:
             logger.error(f"恢复任务失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 恢复失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
@@ -2177,7 +2395,7 @@ class OpenlistPlugin(Star):
             return
         user_id = event.get_sender_id()
         user_config = self.get_user_config(user_id)
-        
+
         # 检查配置
         max_preview_size_mb = user_config.get("max_preview_size", 0)
         if max_preview_size_mb == -1:
@@ -2206,7 +2424,7 @@ class OpenlistPlugin(Star):
         else:
             path_candidates = self._resolve_path_candidates(user_id, path_or_num)
             full_path = path_candidates[0]
-        
+
         try:
             async with self._create_openlist_client(user_config) as client:
                 if not item:
@@ -2232,7 +2450,7 @@ class OpenlistPlugin(Star):
                         f"💡 当前允许: {self._format_extension_filter(user_config)}"
                     )
                     return
-                
+
                 # 压缩包预览支持 (使用 API)
                 archive_extensions = [".zip", ".tar", ".gz", ".7z", ".rar", ".bz2", ".xz"]
                 if ext in archive_extensions:
@@ -2243,19 +2461,19 @@ class OpenlistPlugin(Star):
                         if not contents:
                             yield event.plain_result(f"📦 压缩包 {file_name} 为空。")
                             return
-                        
+
                         file_list = []
                         for f in contents:
                             prefix = "📁" if f.get("is_dir") else "📄"
                             size_str = f" ({f['size'] / 1024:.1f} KB)" if not f.get("is_dir") else ""
                             file_list.append(f"{prefix} {f['name']}{size_str}")
-                        
+
                         max_display = 20
                         display_list = file_list[:max_display]
                         result_text = f"📦 压缩包预览: {file_name}\n---\n" + "\n".join(display_list)
                         if len(file_list) > max_display:
                             result_text += f"\n\n...(及其他 {len(file_list) - max_display} 个文件)"
-                        
+
                         yield event.plain_result(result_text)
                         return
                     else:
@@ -2269,7 +2487,7 @@ class OpenlistPlugin(Star):
                         return
 
                 yield event.plain_result(f"🔍 正在获取预览: {file_name}...")
-                
+
                 # 获取真实下载链接
                 link = await client.get_direct_download_link(full_path)
                 if not link:
@@ -2283,7 +2501,7 @@ class OpenlistPlugin(Star):
                 os.makedirs(temp_dir, exist_ok=True)
                 safe_filename = self._sanitize_filename(file_name)
                 temp_file_path = os.path.join(temp_dir, f"preview_{self._unique_suffix()}_{safe_filename}")
-                
+
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(download_url, headers=download_headers) as resp:
@@ -2297,30 +2515,30 @@ class OpenlistPlugin(Star):
 
                     # 仅支持文本预览
                     text_extensions = [".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".conf", ".cfg", ".toml", ".py", ".js", ".java", ".c", ".cpp", ".h", ".go", ".rs", ".php", ".rb", ".sh", ".bash", ".html", ".htm", ".css", ".jsx", ".tsx", ".ts", ".vue", ".sql", ".csv", ".properties", ".env"]
-                    
+
                     if ext in text_extensions:
                         text_length = user_config.get("text_preview_length", 1000)
                         try:
                             with open(temp_file_path, "rb") as f:
                                 content_bytes = f.read(text_length * 4) # 多读一点以防编码问题
-                                
+
                                 # 使用 chardet 检测编码
                                 detection = chardet.detect(content_bytes)
                                 encoding = detection.get('encoding', 'utf-8') or 'utf-8'
                                 confidence = detection.get('confidence', 0)
                                 logger.debug(f"文本预览编码检测: {encoding}, 置信度: {confidence:.2f}")
-                                
+
                                 try:
                                     decoded_text = content_bytes.decode(encoding, errors='ignore').strip()
                                 except:
                                     # 如果检测出的编码失败，回退到 utf-8
                                     encoding = 'utf-8'
                                     decoded_text = content_bytes.decode('utf-8', errors='ignore').strip()
-                                    
+
                                 preview_text = decoded_text[:text_length]
                                 if len(decoded_text) > text_length:
                                     preview_text += "\n\n..."
-                                
+
                                 yield event.plain_result(f"📝 文本预览:\n---\n{preview_text}")
                         except Exception as e:
                             logger.error(f"文本预览失败: {e}")
@@ -2383,25 +2601,25 @@ class OpenlistPlugin(Star):
                 if success:
                     yield event.plain_result(f"✅ 已删除: {display_name}")
                     self.cache_manager.clear_cache(user_id)
-                    
+
                     # 检查是否删除了当前路径或其父目录
                     nav_state = self._get_user_navigation_state(user_id)
                     current_path = nav_state["current_path"]
-                    
+
                     # 构建被删除项目的完整路径列表
                     deleted_full_paths = []
                     for name in target_names:
                         p = f"{target_dir.rstrip('/')}/{name}"
                         if not p.startswith("/"): p = "/" + p
                         deleted_full_paths.append(p)
-                    
+
                     # 如果当前路径被删除（或当前路径是其子目录），返回根目录
                     is_current_path_deleted = False
                     for deleted_path in deleted_full_paths:
                         if current_path == deleted_path or current_path.startswith(deleted_path + "/"):
                             is_current_path_deleted = True
                             break
-                    
+
                     if is_current_path_deleted:
                         # 返回根目录并刷新
                         result = await client.list_files("/")
@@ -2534,6 +2752,7 @@ class OpenlistPlugin(Star):
 📦 `/ol backup [/目标路径] [@群号]`
    - 将指定群聊的所有文件递归备份到 Openlist。
    - 示例: `/ol backup /群备份 @123456`
+   - 重试失败项: `/ol backup retry`
    - 提示: 路径须以 `/` 开头，群号须以 `@` 开头。未指定路径时使用 `backup_default_path`。
 
 🔄 `/ol autobackup <enable|disable> [@群号] [/路径]`

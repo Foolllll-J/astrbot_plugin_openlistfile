@@ -95,6 +95,10 @@
 # 设置手动备份默认目录（支持 {group_id} 占位符）
 /ol config set backup_default_path /backup/group_{group_id}
 
+# 设置备份单文件重试：总尝试次数 3，每次间隔 5 秒
+/ol config set backup_retry_attempts 3
+/ol config set backup_retry_delay 5
+
 # 测试连接
 /ol config test
 
@@ -219,6 +223,7 @@
 /ol backup @123456789 /backup/group_files  # 备份指定群文件到指定目录
 /ol backup /my_backup                      # 备份当前群文件到指定目录
 /ol backup                                 # 备份当前群文件到配置的默认目录
+/ol backup retry                           # 只重试上次备份失败的文件
 
 # 自动备份设置
 /ol autobackup enable @123456789 /backup   # 开启指定群的自动备份

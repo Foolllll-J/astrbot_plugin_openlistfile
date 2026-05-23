@@ -188,7 +188,19 @@
                 "type": "int",
                 "default": 0,
                 "hint": "0 表示不限制。"
+            },
+            "backup_retry_attempts": {
+                "description": "备份单文件尝试次数",
+                "type": "int",
+                "default": 3,
+                "hint": "每个群文件备份失败时最多尝试次数，包含首次尝试。"
+            },
+            "backup_retry_delay": {
+                "description": "备份重试间隔(秒)",
+                "type": "int",
+                "default": 5,
+                "hint": "同一文件两次备份尝试之间的等待时间。"
             }
         }
     }
-} 
+}

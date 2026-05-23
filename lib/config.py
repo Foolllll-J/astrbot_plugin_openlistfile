@@ -41,6 +41,8 @@ class UserConfigManager:
             "backup_default_path": "/backup/group_{group_id}",
             "backup_allowed_extensions": "",
             "backup_max_size": 0,
+            "backup_retry_attempts": 3,
+            "backup_retry_delay": 5,
             "setup_completed": False,
         }
 
@@ -108,6 +110,8 @@ class GlobalConfigManager:
             "autobackup_groups": [], # 启用自动备份的群号列表
             "backup_allowed_extensions": "",
             "backup_max_size": 0,
+            "backup_retry_attempts": 3,
+            "backup_retry_delay": 5,
         }
 
     def load_config(self) -> Dict:
