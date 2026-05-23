@@ -201,6 +201,12 @@
                 "default": 0,
                 "hint": "0 表示不限制。"
             },
+            "backup_skip_existing": {
+                "description": "跳过已存在备份文件",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后，目标目录已有同名且大小一致的文件时不再重复上传。"
+            },
             "backup_retry_attempts": {
                 "description": "备份单文件尝试次数",
                 "type": "int",

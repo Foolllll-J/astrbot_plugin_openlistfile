@@ -76,6 +76,7 @@ class OpenlistPlugin(Star):
             "autobackup_groups": "autobackup_groups",
             "backup_allowed_extensions": "backup_allowed_extensions",
             "backup_max_size": "backup_max_size",
+            "backup_skip_existing": "backup_skip_existing",
             "backup_retry_attempts": "backup_retry_attempts",
             "backup_retry_delay": "backup_retry_delay",
         }
@@ -934,6 +935,21 @@ class OpenlistPlugin(Star):
                     if not await client.ensure_dir(target_path):
                         logger.error(f"❌ [自动备份] 创建目标目录失败: {target_path}")
                         return
+                    if self._get_bool_config(user_config, "backup_skip_existing", True):
+                        list_result = await client.list_files(target_path, per_page=0)
+                        if list_result is not None:
+                            for existing in list_result.get("content") or []:
+                                if existing.get("is_dir", False) or existing.get("name") != file_name:
+                                    continue
+                                try:
+                                    existing_size = int(existing.get("size", 0))
+                                    expected_size = int(file_size) if file_size is not None else None
+                                except (TypeError, ValueError):
+                                    expected_size = None
+                                    existing_size = None
+                                if expected_size is None or existing_size == expected_size:
+                                    logger.info(f"⏭️ [自动备份] 跳过已存在文件: {target_path}/{file_name}")
+                                    return
                     if (file_url or file_id) and file_size is not None:
                         item = {
                             "file_id": file_id,
@@ -1426,15 +1442,58 @@ class OpenlistPlugin(Star):
 
         success_count = 0
         fail_count = 0
+        skipped_count = 0
         failed_items = []
         retry_attempts = self._get_positive_int_config(user_config, "backup_retry_attempts", 3)
         retry_delay = self._get_positive_int_config(user_config, "backup_retry_delay", 5, minimum=0)
+        skip_existing = self._get_bool_config(user_config, "backup_skip_existing", True)
+        existing_cache = {}
+        existing_cache_lock = asyncio.Lock()
 
         async with self._create_openlist_client(user_config) as client:
             semaphore = asyncio.Semaphore(3)
 
+            async def get_existing_files(target_dir: str) -> Dict[str, Dict]:
+                target_dir = target_dir or "/"
+                async with existing_cache_lock:
+                    if target_dir in existing_cache:
+                        return existing_cache[target_dir]
+                    list_result = await client.list_files(target_dir, per_page=0)
+                    files = {}
+                    if list_result is not None:
+                        for existing in list_result.get("content") or []:
+                            if not existing.get("is_dir", False):
+                                files[existing.get("name", "")] = existing
+                    existing_cache[target_dir] = files
+                    return files
+
+            async def existing_file_matches(target_dir: str, file_name: str, file_size) -> bool:
+                if not skip_existing:
+                    return False
+                existing_files = await get_existing_files(target_dir)
+                existing = existing_files.get(file_name)
+                if not existing:
+                    return False
+                try:
+                    expected_size = int(file_size) if file_size is not None else None
+                    existing_size = int(existing.get("size", 0))
+                except (TypeError, ValueError):
+                    return True
+                return expected_size is None or existing_size == expected_size
+
+            async def remember_existing_file(target_dir: str, file_name: str, file_size):
+                if not skip_existing:
+                    return
+                target_dir = target_dir or "/"
+                async with existing_cache_lock:
+                    existing_cache.setdefault(target_dir, {})[file_name] = {
+                        "name": file_name,
+                        "size": file_size or 0,
+                        "is_dir": False,
+                    }
+
             async def upload_task(item, idx):
-                nonlocal success_count, fail_count
+                nonlocal success_count, fail_count, skipped_count
                 async with semaphore:
                     file_id = item.get("file_id")
                     file_name = item.get("file_name")
@@ -1449,6 +1508,11 @@ class OpenlistPlugin(Star):
                             return
 
                         target_dir = target_dir or "/"
+                        if await existing_file_matches(target_dir, file_name, item.get("file_size")):
+                            skipped_count += 1
+                            logger.info(f"⏭️ [群备份] 跳过已存在文件: {target_dir}/{file_name}")
+                            return
+
                         up_res, reason = await self._upload_group_file_with_retry(
                             bot,
                             client,
@@ -1460,6 +1524,7 @@ class OpenlistPlugin(Star):
                         )
                         if up_res:
                             success_count += 1
+                            await remember_existing_file(target_dir, file_name, item.get("file_size"))
                         else:
                             fail_count += 1
                             failed_item = dict(item)
@@ -1476,7 +1541,10 @@ class OpenlistPlugin(Star):
             for i in range(0, total, batch_size):
                 batch_tasks = [upload_task(item, j) for j, item in enumerate(filtered_items[i:i+batch_size], start=i)]
                 await asyncio.gather(*batch_tasks)
-                logger.info(f"⏳ 备份进度: {min(i+batch_size, total)}/{total} (成功: {success_count}, 失败: {fail_count})")
+                logger.info(
+                    f"⏳ 备份进度: {min(i+batch_size, total)}/{total} "
+                    f"(成功: {success_count}, 跳过: {skipped_count}, 失败: {fail_count})"
+                )
 
         if not is_auto:
             if success_count:
@@ -1497,14 +1565,14 @@ class OpenlistPlugin(Star):
             retry_hint = "\n💡 发送 /ol backup retry 可只重试失败项。" if failed_items else ""
             yield event.plain_result(
                 f"✅ 备份任务结束!\n"
-                f"📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n"
+                f"📊 统计: 总计 {total}, 成功 {success_count}, 跳过 {skipped_count}, 失败 {fail_count}\n"
                 f"📂 目标: {target_path}"
                 f"{retry_hint}"
             )
         else:
             if success_count:
                 self.cache_manager.clear_cache()
-            logger.info(f"✅ [自动备份] 任务结束。群 {group_id}: 成功 {success_count}, 失败 {fail_count}")
+            logger.info(f"✅ [自动备份] 任务结束。群 {group_id}: 成功 {success_count}, 跳过 {skipped_count}, 失败 {fail_count}")
 
     async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
         """上传图片到Openlist"""
@@ -1628,7 +1696,7 @@ class OpenlistPlugin(Star):
                 "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
                 "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout",
                 "debug_transfer_logging", "debug_upload_logging",
-                "backup_default_path", "backup_allowed_extensions", "backup_max_size",
+                "backup_default_path", "backup_allowed_extensions", "backup_max_size", "backup_skip_existing",
                 "backup_retry_attempts", "backup_retry_delay"
             ]
             if key not in valid_keys:
@@ -1692,7 +1760,7 @@ class OpenlistPlugin(Star):
                 except ValueError:
                     yield event.plain_result(f"❌ {key} 必须是数字")
                     return
-            elif key in ["enable_cache", "debug_transfer_logging"]:
+            elif key in ["enable_cache", "debug_transfer_logging", "backup_skip_existing"]:
                 value = value.lower() in ["true", "1", "yes", "on"]
             elif key in ["allowed_extensions", "backup_allowed_extensions"]:
                 # 允许输入逗号分隔的字符串，存为列表

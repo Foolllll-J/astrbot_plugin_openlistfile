@@ -99,6 +99,9 @@
 # 设置手动备份默认目录（支持 {group_id} 占位符）
 /ol config set backup_default_path /backup/group_{group_id}
 
+# 备份时跳过目标目录内同名且大小一致的文件（默认开启）
+/ol config set backup_skip_existing true
+
 # 设置备份单文件重试：总尝试次数 3，每次间隔 5 秒
 /ol config set backup_retry_attempts 3
 /ol config set backup_retry_delay 5
