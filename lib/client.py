@@ -10,6 +10,10 @@ from astrbot.api import logger
 
 UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 UPLOAD_PROGRESS_STEP = 64 * 1024 * 1024
+UPSTREAM_CONNECT_TIMEOUT = 60
+UPSTREAM_READ_TIMEOUT = 180
+OPENLIST_CONNECT_TIMEOUT = 30
+OPENLIST_UPLOAD_RESPONSE_TIMEOUT = 3000
 
 
 class ProgressFilePayload(aiohttp.Payload):
@@ -379,7 +383,11 @@ class OpenlistClient:
                 except Exception as e:
                     logger.warning(f"解析上游文件目标失败: {source_host}:{source_port}, err={e}")
 
-            timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=None)
+            timeout = aiohttp.ClientTimeout(
+                total=None,
+                sock_connect=UPSTREAM_CONNECT_TIMEOUT,
+                sock_read=UPSTREAM_READ_TIMEOUT,
+            )
             async with self.session.get(source_url, timeout=timeout) as source_response:
                 content_length = source_response.headers.get("Content-Length")
                 content_type = source_response.headers.get("Content-Type")
@@ -445,7 +453,11 @@ class OpenlistClient:
             f"auth={'yes' if headers.get('Authorization') else 'no'}"
         )
 
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30)
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=OPENLIST_CONNECT_TIMEOUT,
+            sock_read=OPENLIST_UPLOAD_RESPONSE_TIMEOUT,
+        )
         logger.info(f"发起 OpenList PUT 上传请求: {upload_url}")
         parsed_url = urlparse(upload_url)
         host = parsed_url.hostname

@@ -2,6 +2,7 @@ import asyncio
 import os
 import posixpath
 import time
+import uuid
 import chardet
 from typing import List, Dict, Optional
 import aiohttp
@@ -465,6 +466,10 @@ class OpenlistPlugin(Star):
         safe_name = "".join(c for c in (filename or "") if c.isalnum() or c in "._- ").strip(" .")
         return (safe_name[:100] or fallback)
 
+    def _unique_suffix(self) -> str:
+        """生成临时文件名后缀，避免同一秒内并发请求撞名。"""
+        return f"{time.time_ns()}_{uuid.uuid4().hex[:12]}"
+
     def _render_backup_path(self, path_template: str, group_id) -> str:
         """渲染备份目录模板，支持 {group_id}、{gid}、{group} 占位符。"""
         group_id = str(group_id)
@@ -539,7 +544,7 @@ class OpenlistPlugin(Star):
         attachment_name = f"{safe_base}_download_link.txt"
         temp_file_path = os.path.join(
             links_dir,
-            f"{event.get_sender_id()}_{int(time.time())}_{attachment_name}",
+            f"{event.get_sender_id()}_{self._unique_suffix()}_{attachment_name}",
         )
         content = (
             "OpenList 下载链接\n\n"
@@ -679,7 +684,7 @@ class OpenlistPlugin(Star):
                 downloads_dir = os.path.join(StarTools.get_data_dir("openlist"), "downloads")
                 os.makedirs(downloads_dir, exist_ok=True)
                 safe_filename = self._sanitize_filename(file_name)
-                temp_file_path = os.path.join(downloads_dir, f"{user_id}_{int(time.time())}_{safe_filename}")
+                temp_file_path = os.path.join(downloads_dir, f"{user_id}_{self._unique_suffix()}_{safe_filename}")
                 yield event.plain_result(f"📥 开始下载: {file_name}\n💾 大小: {self._format_file_size(file_size)}")
                 async with aiohttp.ClientSession() as session:
                     async with session.get(download_url, headers=download_headers) as response:
@@ -1192,13 +1197,11 @@ class OpenlistPlugin(Star):
                 return
 
             try:
-                import time
-                timestamp = int(time.time())
                 if image_path.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
                     ext = os.path.splitext(image_path)[1]
                 else:
                     ext = ".jpg"
-                filename = f"image_{timestamp}{ext}"
+                filename = f"image_{self._unique_suffix()}{ext}"
                 if not self._is_extension_allowed(filename, user_config):
                     yield event.plain_result(
                         f"❌ 图片类型不允许上传: {filename}\n"
@@ -2018,7 +2021,7 @@ class OpenlistPlugin(Star):
                             continue
                         
                         safe_filename = self._sanitize_filename(file_name)
-                        temp_file_path = os.path.join(downloads_dir, f"restore_{int(time.time())}_{safe_filename}")
+                        temp_file_path = os.path.join(downloads_dir, f"restore_{self._unique_suffix()}_{safe_filename}")
                         
                         async with aiohttp.ClientSession() as session:
                             async with session.get(download_url, headers=download_headers) as response:
@@ -2222,7 +2225,7 @@ class OpenlistPlugin(Star):
                 temp_dir = os.path.join(StarTools.get_data_dir("openlist"), "temp_preview")
                 os.makedirs(temp_dir, exist_ok=True)
                 safe_filename = self._sanitize_filename(file_name)
-                temp_file_path = os.path.join(temp_dir, f"preview_{int(time.time())}_{safe_filename}")
+                temp_file_path = os.path.join(temp_dir, f"preview_{self._unique_suffix()}_{safe_filename}")
                 
                 try:
                     async with aiohttp.ClientSession() as session:
