@@ -78,6 +78,17 @@
 # 设置上传模式持续时间（分钟，默认 10）
 /ol config set upload_mode_timeout 30
 
+# 传输调优（单位：MB/秒）
+/ol config set upload_chunk_size_mb 4
+/ol config set upload_progress_step_mb 64
+/ol config set upstream_connect_timeout 60
+/ol config set upstream_read_timeout 180
+/ol config set openlist_connect_timeout 30
+/ol config set openlist_upload_response_timeout 3000
+
+# 开启上传/下载/DNS 诊断日志（默认关闭）
+/ol config set debug_transfer_logging true
+
 # 设置允许的文件扩展名（留空表示不限制；设置后限制下载、取链接、预览和上传）
 /ol config set allowed_extensions .txt,.pdf,.mp4
 

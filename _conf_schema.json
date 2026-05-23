@@ -34,10 +34,10 @@
                 "hint": "可选，优先级高于用户名密码"
             },
             "fixed_base_directory": {
-                "description": "下载链接前缀路径 (可选，需使用获取下载链接指令时必填)",
+                "description": "下载/真实链接前缀路径",
                 "type": "string",
                 "default": "",
-                "hint": "例如: /夸克 (留空则不添加前缀)"
+                "hint": "用于 /d、/p 和 /api/fs/link 等真实下载路径。例如: /夸克；留空则不添加前缀。"
             },
             "max_display_files": {
                 "description": "最大显示文件数",
@@ -114,6 +114,44 @@
                 },
                 "default": 10,
                 "hint": "开启上传模式后，超过该时间未完成上传会自动取消。"
+            },
+            "upload_chunk_size_mb": {
+                "description": "上传分块大小(MB)",
+                "type": "int",
+                "default": 4,
+                "hint": "本地/URL中转上传时每次读取的块大小。"
+            },
+            "upload_progress_step_mb": {
+                "description": "上传进度日志间隔(MB)",
+                "type": "int",
+                "default": 64,
+                "hint": "仅 debug_transfer_logging 开启时生效。"
+            },
+            "upstream_connect_timeout": {
+                "description": "上游URL连接超时(秒)",
+                "type": "int",
+                "default": 60
+            },
+            "upstream_read_timeout": {
+                "description": "上游URL无数据超时(秒)",
+                "type": "int",
+                "default": 180
+            },
+            "openlist_connect_timeout": {
+                "description": "OpenList上传连接超时(秒)",
+                "type": "int",
+                "default": 30
+            },
+            "openlist_upload_response_timeout": {
+                "description": "OpenList上传响应超时(秒)",
+                "type": "int",
+                "default": 3000
+            },
+            "debug_transfer_logging": {
+                "description": "启用传输诊断日志",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后输出上传/下载进度、连接信息和 DNS 解析等详细日志。"
             },
             "require_user_auth": {
                 "description": "要求用户认证",

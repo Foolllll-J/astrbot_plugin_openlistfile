@@ -60,6 +60,13 @@ class OpenlistPlugin(Star):
             "max_download_size": "max_download_size",
             "max_upload_size": "max_upload_size",
             "upload_mode_timeout": "upload_mode_timeout",
+            "upload_chunk_size_mb": "upload_chunk_size_mb",
+            "upload_progress_step_mb": "upload_progress_step_mb",
+            "upstream_connect_timeout": "upstream_connect_timeout",
+            "upstream_read_timeout": "upstream_read_timeout",
+            "openlist_connect_timeout": "openlist_connect_timeout",
+            "openlist_upload_response_timeout": "openlist_upload_response_timeout",
+            "debug_transfer_logging": "debug_transfer_logging",
             "backup_default_path": "backup_default_path",
             "autobackup_default_path": "autobackup_default_path",
             "require_user_auth": "require_user_auth",
@@ -144,6 +151,50 @@ class OpenlistPlugin(Star):
             logger.warning(f"配置 cache_duration 的值过小: {duration}，已使用默认值 300 秒")
             return 300
         return duration
+
+    def _get_positive_int_config(self, user_config: Dict, key: str, default: int, minimum: int = 1) -> int:
+        """读取正整数配置。"""
+        try:
+            value = int(user_config.get(key, default))
+        except (TypeError, ValueError):
+            logger.warning(f"配置 {key} 的值无效: {user_config.get(key)!r}，已使用默认值 {default}")
+            return default
+        if value < minimum:
+            logger.warning(f"配置 {key} 的值过小: {value}，已使用默认值 {default}")
+            return default
+        return value
+
+    def _get_bool_config(self, user_config: Dict, key: str, default: bool = False) -> bool:
+        """读取布尔配置。"""
+        value = user_config.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
+
+    def _get_transfer_config(self, user_config: Dict) -> Dict:
+        """读取上传/中转传输调优配置。"""
+        mb = 1024 * 1024
+        return {
+            "upload_chunk_size": self._get_positive_int_config(user_config, "upload_chunk_size_mb", 4) * mb,
+            "upload_progress_step": self._get_positive_int_config(user_config, "upload_progress_step_mb", 64) * mb,
+            "upstream_connect_timeout": self._get_positive_int_config(user_config, "upstream_connect_timeout", 60),
+            "upstream_read_timeout": self._get_positive_int_config(user_config, "upstream_read_timeout", 180),
+            "openlist_connect_timeout": self._get_positive_int_config(user_config, "openlist_connect_timeout", 30),
+            "openlist_upload_response_timeout": self._get_positive_int_config(user_config, "openlist_upload_response_timeout", 3000),
+            "debug_transfer_logging": self._get_bool_config(user_config, "debug_transfer_logging", False),
+        }
+
+    def _create_openlist_client(self, user_config: Dict) -> OpenlistClient:
+        """基于用户配置创建 OpenList 客户端。"""
+        return OpenlistClient(
+            user_config["openlist_url"],
+            user_config.get("public_openlist_url", ""),
+            user_config.get("username", ""),
+            user_config.get("password", ""),
+            user_config.get("token", ""),
+            user_config.get("fixed_base_directory", ""),
+            transfer_config=self._get_transfer_config(user_config),
+        )
 
     def _get_extension_filter(self, user_config: Dict, key: str = "allowed_extensions") -> List[str]:
         """读取扩展名过滤配置；空列表表示不限制。"""
@@ -663,7 +714,7 @@ class OpenlistPlugin(Star):
             else:
                 file_path = self._get_item_full_path(user_id, file_item, user_config)
 
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 link = await client.get_direct_download_link(file_path)
                 if not link:
                     yield event.plain_result("❌ 无法获取真实下载链接，请确认配置账号为 OpenList 管理员或具有 /api/fs/link 权限")
@@ -694,7 +745,11 @@ class OpenlistPlugin(Star):
                                 async for chunk in response.content.iter_chunked(8192):
                                     f.write(chunk)
                                     downloaded += len(chunk)
-                                    if (file_size > 10 * 1024 * 1024 and downloaded % (10 * 1024 * 1024) < 8192):
+                                    if (
+                                        self._get_bool_config(user_config, "debug_transfer_logging", False)
+                                        and file_size > 10 * 1024 * 1024
+                                        and downloaded % (10 * 1024 * 1024) < 8192
+                                    ):
                                         progress = (downloaded / file_size) * 100
                                         logger.info(
                                             f"下载进度: {file_name} {progress:.1f}% "
@@ -732,7 +787,7 @@ class OpenlistPlugin(Star):
             return
 
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 download_url = await client.get_download_url(file_path)
                 if download_url:
                     name = item.get("name", "")
@@ -767,14 +822,7 @@ class OpenlistPlugin(Star):
                     return
 
                 logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
-                async with OpenlistClient(
-                    user_config["openlist_url"],
-                    user_config.get("public_openlist_url", ""),
-                    user_config.get("username", ""),
-                    user_config.get("password", ""),
-                    user_config.get("token", ""),
-                    user_config.get("fixed_base_directory", "")
-                ) as client:
+                async with self._create_openlist_client(user_config) as client:
                     if not await client.ensure_dir(target_path):
                         logger.error(f"❌ [自动备份] 创建目标目录失败: {target_path}")
                         return
@@ -966,7 +1014,7 @@ class OpenlistPlugin(Star):
                     f"用户 {user_id} 使用 URL 流式中转上传: name={file_name}, "
                     f"size={raw_file_size_int}, target={target_path}, openlist_url={user_config.get('openlist_url')}"
                 )
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                async with self._create_openlist_client(user_config) as client:
                     success = await client.upload_url_stream(upload_url, target_path, file_name, raw_file_size_int)
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
@@ -1014,7 +1062,7 @@ class OpenlistPlugin(Star):
                     f"用户 {user_id} 开始调用 OpenList 上传: name={file_name}, local_path={file_path}, "
                     f"target={target_path}, openlist_url={user_config.get('openlist_url')}"
                 )
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                async with self._create_openlist_client(user_config) as client:
                     success = await client.upload_file(file_path, target_path, file_name)
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
@@ -1119,14 +1167,7 @@ class OpenlistPlugin(Star):
         success_count = 0
         fail_count = 0
 
-        async with OpenlistClient(
-            user_config["openlist_url"], 
-            user_config.get("public_openlist_url", ""), 
-            user_config.get("username", ""), 
-            user_config.get("password", ""), 
-            user_config.get("token", ""), 
-            user_config.get("fixed_base_directory", "")
-        ) as client:
+        async with self._create_openlist_client(user_config) as client:
             semaphore = asyncio.Semaphore(3)
             
             async def upload_task(item, idx):
@@ -1216,7 +1257,7 @@ class OpenlistPlugin(Star):
                     yield event.plain_result(f"❌ 图片过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
                     return
                 yield event.plain_result(f"📤 开始上传图片: {filename}\n💾 大小: {self._format_file_size(file_size)}\n📂 目标: {target_path}")
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                async with self._create_openlist_client(user_config) as client:
                     success = await client.upload_file(image_path, target_path, filename)
                     if success:
                         yield event.plain_result(f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
@@ -1302,13 +1343,23 @@ class OpenlistPlugin(Star):
                 "max_display_files", "public_openlist_url", 
                 "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
                 "enable_cache", "cache_duration", "max_download_size", "max_upload_size", "upload_mode_timeout",
+                "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
+                "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout",
+                "debug_transfer_logging", "debug_upload_logging",
                 "backup_default_path", "backup_allowed_extensions", "backup_max_size"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
                 return
+            if key == "debug_upload_logging":
+                key = "debug_transfer_logging"
             
-            if key in ["max_display_files", "cache_duration", "backup_max_size", "max_preview_size", "text_preview_length", "max_download_size", "max_upload_size", "upload_mode_timeout"]:
+            if key in [
+                "max_display_files", "cache_duration", "backup_max_size", "max_preview_size",
+                "text_preview_length", "max_download_size", "max_upload_size", "upload_mode_timeout",
+                "upload_chunk_size_mb", "upload_progress_step_mb", "upstream_connect_timeout",
+                "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout"
+            ]:
                 try:
                     value = int(value)
                     if key == "max_display_files" and (value < 1 or value > 100):
@@ -1329,6 +1380,12 @@ class OpenlistPlugin(Star):
                     if key == "upload_mode_timeout" and (value < 1):
                         yield event.plain_result("❌ upload_mode_timeout 必须大于0")
                         return
+                    if key in ["upload_chunk_size_mb", "upload_progress_step_mb"] and value < 1:
+                        yield event.plain_result(f"❌ {key} 必须大于0")
+                        return
+                    if key in ["upstream_connect_timeout", "upstream_read_timeout", "openlist_connect_timeout", "openlist_upload_response_timeout"] and value < 1:
+                        yield event.plain_result(f"❌ {key} 必须大于0")
+                        return
                     if key == "max_preview_size" and (value < -1):
                         yield event.plain_result("❌ max_preview_size 必须大于等于 -1 (-1表示禁用, 0表示不限制)")
                         return
@@ -1338,7 +1395,7 @@ class OpenlistPlugin(Star):
                 except ValueError:
                     yield event.plain_result(f"❌ {key} 必须是数字")
                     return
-            elif key in ["enable_cache"]:
+            elif key in ["enable_cache", "debug_transfer_logging"]:
                 value = value.lower() in ["true", "1", "yes", "on"]
             elif key in ["allowed_extensions", "backup_allowed_extensions"]:
                 # 允许输入逗号分隔的字符串，存为列表
@@ -1363,7 +1420,7 @@ class OpenlistPlugin(Star):
                 yield event.plain_result("❌ 请先配置Openlist URL\n💡 使用 /ol config setup 开始配置向导")
                 return
             try:
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                async with self._create_openlist_client(user_config) as client:
                     files = await client.list_files("/")
                     if files is not None:
                         yield event.plain_result("✅ Openlist连接测试成功!")
@@ -1408,7 +1465,7 @@ class OpenlistPlugin(Star):
         try:
             cache_enabled = str(user_config.get("enable_cache", True)).lower() not in ("false", "0", "no", "off")
             cache_duration = self._get_cache_duration_seconds(user_config)
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 for candidate_path in path_candidates:
                     file_info = await client.get_file_info(candidate_path)
                     if file_info and not file_info.get("is_dir", False):
@@ -1511,7 +1568,7 @@ class OpenlistPlugin(Star):
             return
         try:
             yield event.plain_result(f'🔍 正在搜索 "{keyword}"...')
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 files = await client.search_files(keyword, path)
                 if files:
                     search_title = f'🔍 搜索 "{keyword}"' 
@@ -1541,7 +1598,7 @@ class OpenlistPlugin(Star):
         path_candidates = self._resolve_path_candidates(user_id, path)
         target_path = path_candidates[0]
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 file_info = None
                 for candidate_path in path_candidates:
                     file_info = await client.get_file_info(candidate_path)
@@ -1611,7 +1668,7 @@ class OpenlistPlugin(Star):
         else:
             path_candidates = self._resolve_path_candidates(user_id, path)
             try:
-                async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+                async with self._create_openlist_client(user_config) as client:
                     for candidate_path in path_candidates:
                         file_info = await client.get_file_info(candidate_path)
                         if file_info and not file_info.get("is_dir", False):
@@ -1646,7 +1703,7 @@ class OpenlistPlugin(Star):
             return
         previous_path = nav_state["parent_paths"].pop()
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 result = await client.list_files(previous_path)
                 if result is not None:
                     files = result.get("content") or []
@@ -1684,7 +1741,7 @@ class OpenlistPlugin(Star):
         upload_timeout_minutes = self._get_upload_mode_timeout_minutes(user_config)
         target_path = self._resolve_target_path(user_id, target)
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 result = await client.list_files(target_path, per_page=1)
                 if result is None:
                     yield event.plain_result(f"❌ 无法访问上传目标目录: {target_path}")
@@ -1926,7 +1983,7 @@ class OpenlistPlugin(Star):
         yield event.plain_result(f"🚀 正在启动恢复任务...\n📂 来源路径: {path}\n🎯 目标: {target_desc}")
         
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 # 递归搜集文件
                 files_to_restore = []
                 base_path = path.rstrip('/')
@@ -2151,7 +2208,7 @@ class OpenlistPlugin(Star):
             full_path = path_candidates[0]
         
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 if not item:
                     for candidate_path in path_candidates:
                         item = await client.get_file_info(candidate_path)
@@ -2321,7 +2378,7 @@ class OpenlistPlugin(Star):
             display_name = full_path
 
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 success = await client.remove(target_dir, target_names)
                 if success:
                     yield event.plain_result(f"✅ 已删除: {display_name}")
@@ -2388,7 +2445,7 @@ class OpenlistPlugin(Star):
             return
 
         try:
-            async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
+            async with self._create_openlist_client(user_config) as client:
                 success = await client.mkdir(full_path)
                 if success:
                     yield event.plain_result(f"✅ 已创建文件夹: {name}")
