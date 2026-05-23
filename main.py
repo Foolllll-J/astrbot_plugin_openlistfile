@@ -2308,7 +2308,21 @@ class OpenlistPlugin(Star):
             new_groups.append(new_entry)
             local_cfg["autobackup_groups"] = new_groups
             self.global_config_manager.save_config(local_cfg)
-            yield event.plain_result(f"✅ 群 {target_gid} 自动备份已开启 -> {target_path}")
+            yield event.plain_result(
+                f"✅ 群 {target_gid} 自动备份已开启 -> {target_path}\n"
+                f"📦 正在执行首次全量备份..."
+            )
+            backup_config = self.get_global_config()
+            async for result in self._do_backup_logic(
+                event.bot,
+                event,
+                int(target_gid),
+                target_path,
+                backup_config,
+                is_auto=False,
+                retry_key=self._get_backup_retry_key(event),
+            ):
+                yield result
 
         elif action == "disable":
             # disable 只需要群号，忽略路径
@@ -2911,7 +2925,7 @@ class OpenlistPlugin(Star):
 
 🔄 `/ol autobackup <enable|disable> [@群号] [/路径]`
    - 配置群文件自动备份（新上传文件自动同步）。
-   - 示例: `/ol autobackup enable` (开启当前群备份到默认路径)
+   - 示例: `/ol autobackup enable` (开启当前群备份到默认路径，并立即执行一次全量备份)
    - 示例: `/ol autobackup enable @123456 /backup` (指定群号和路径)
    - 示例: `/ol autobackup disable @123456` (禁用指定群的自动备份)
    - 提示: 禁用时无需提供路径。路径须以 `/` 开头，群号须以 `@` 开头。

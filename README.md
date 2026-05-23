@@ -233,7 +233,7 @@
 /ol backup retry                           # 只重试上次备份失败的文件
 
 # 自动备份设置
-/ol autobackup enable @123456789 /backup   # 开启指定群的自动备份
+/ol autobackup enable @123456789 /backup   # 开启指定群的自动备份，并立即执行一次全量备份
 /ol autobackup disable         # 关闭当前群的自动备份
 
 # 从 OpenList 恢复文件到群
