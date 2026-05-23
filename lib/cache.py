@@ -56,7 +56,13 @@ class CacheManager:
             cache_key = self._get_cache_key(url, path, user_id)
             cache_file = self._get_cache_file(cache_key)
 
-            cache_data = {"timestamp": time.time(), "data": data}
+            cache_data = {
+                "timestamp": time.time(),
+                "url": url,
+                "path": path,
+                "user_id": user_id,
+                "data": data,
+            }
 
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
@@ -70,12 +76,15 @@ class CacheManager:
                 # 清理指定用户的缓存
                 for filename in os.listdir(self.cache_dir):
                     if filename.endswith(".json"):
-                        cache_key = filename[:-5]
-                        # 简单检查缓存键是否包含用户ID（通过MD5不完美但够用）
-                        test_key = self._get_cache_key("test", "test", user_id)
-                        if user_id in test_key or cache_key.startswith(test_key[:8]):
+                        cache_file = os.path.join(self.cache_dir, filename)
+                        try:
+                            with open(cache_file, "r", encoding="utf-8") as f:
+                                cache_data = json.load(f)
+                            if cache_data.get("user_id") in (user_id, None):
+                                os.remove(cache_file)
+                        except:
                             try:
-                                os.remove(os.path.join(self.cache_dir, filename))
+                                os.remove(cache_file)
                             except:
                                 pass
             else:

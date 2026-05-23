@@ -265,13 +265,19 @@ class OpenlistClient:
             logger.error(f"搜索文件失败: {e}, 关键词: {keyword}, 路径: {path}", exc_info=True)
             return []
 
-    async def get_download_url(self, path: str) -> Optional[str]:
+    async def get_download_url(self, path: str, prefer_public: bool = True) -> Optional[str]:
         """获取文件下载链接"""
         file_info = await self.get_file_info(path)
 
         if file_info and not file_info.get("is_dir", True):
+            raw_url = file_info.get("raw_url")
+            if raw_url:
+                if prefer_public and self.public_base_url and raw_url.startswith(self.base_url):
+                    return self.public_base_url + raw_url[len(self.base_url):]
+                return raw_url
+
             sign = file_info.get("sign")
-            base_url_to_use = self.public_base_url if self.public_base_url else self.base_url
+            base_url_to_use = self.public_base_url if prefer_public and self.public_base_url else self.base_url
 
             if self.fixed_base_directory:
                 full_path = f"{self.fixed_base_directory.rstrip('/')}/{path.lstrip('/')}"
@@ -289,6 +295,45 @@ class OpenlistClient:
             return f"{base_url_to_use}/d{encoded_url_path}?sign={sign}"
 
         return None
+
+    async def get_direct_download_link(self, path: str) -> Optional[Dict]:
+        """通过认证 API 获取真实下载链接，供机器人后台下载使用。"""
+        async def fallback_to_raw_url(reason: str) -> Optional[Dict]:
+            logger.warning(f"获取真实下载链接失败，尝试 raw_url 兜底: {reason}, 路径: {path}")
+            file_info = await self.get_file_info(path)
+            if file_info and not file_info.get("is_dir", True) and file_info.get("raw_url"):
+                return {"url": file_info["raw_url"], "header": {}}
+            return None
+
+        try:
+            headers = {}
+            if self.token:
+                headers["Authorization"] = self.token
+
+            link_data = {"path": path}
+            async with self.session.post(
+                f"{self.base_url}/api/fs/link", json=link_data, headers=headers
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    if result.get("code") == 200:
+                        data = result.get("data") or {}
+                        if data.get("url"):
+                            return data
+                        logger.error(f"获取真实下载链接失败 - 响应缺少 url: {result}, 路径: {path}")
+                        return await fallback_to_raw_url("响应缺少 url")
+                    logger.error(
+                        f"获取真实下载链接失败 - code: {result.get('code')}, "
+                        f"message: {result.get('message', '未知错误')}, 路径: {path}"
+                    )
+                    return await fallback_to_raw_url(result.get("message", "接口返回错误"))
+
+                error_text = await resp.text()
+                logger.error(f"获取真实下载链接失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                return await fallback_to_raw_url(f"HTTP {resp.status}")
+        except Exception as e:
+            logger.error(f"获取真实下载链接失败: {e}, 路径: {path}", exc_info=True)
+            return await fallback_to_raw_url(str(e))
 
     async def upload_file(
         self, file_path: str, target_path: str, filename: str = None
@@ -479,6 +524,21 @@ class OpenlistClient:
         except Exception as e:
             logger.error(f"创建目录失败: {e}, 路径: {path}", exc_info=True)
             return False
+
+    async def ensure_dir(self, path: str) -> bool:
+        """逐级创建目录，兼容父目录不存在的目标路径。"""
+        normalized = (path or "/").strip().replace("\\", "/")
+        if not normalized or normalized == "/":
+            return True
+        if not normalized.startswith("/"):
+            normalized = "/" + normalized
+        parts = [part for part in normalized.strip("/").split("/") if part]
+        current = ""
+        for part in parts:
+            current = f"{current}/{part}"
+            if not await self.mkdir(current):
+                return False
+        return True
 
     async def remove(self, dir_path: str, names: List[str]) -> bool:
         """删除文件或目录"""

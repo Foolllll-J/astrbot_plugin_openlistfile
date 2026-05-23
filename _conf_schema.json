@@ -52,8 +52,8 @@
             "allowed_extensions": {
                 "description": "允许的文件扩展名",
                 "type": "text",
-                "default": ".txt,.pdf,.doc,.docx,.zip,.rar,.jpg,.png,.gif,.mp4,.mp3",
-                "hint": "用逗号分隔，如: .txt,.pdf,.jpg"
+                "default": "",
+                "hint": "用逗号分隔，如: .txt,.pdf,.jpg。留空表示不限制；设置后会限制下载、取链接、预览和上传。"
             },
             "max_preview_size": {
                 "description": "最大预览文件大小(MB)",
@@ -121,11 +121,23 @@
                 "default": true,
                 "hint": "启用后每个用户需要独立配置"
             },
+            "backup_default_path": {
+                "description": "手动备份默认目录",
+                "type": "string",
+                "default": "/backup/group_{group_id}",
+                "hint": "使用 /ol backup 且未指定路径时的 OpenList 目录。支持 {group_id}、{gid}、{group} 占位符。"
+            },
+            "autobackup_default_path": {
+                "description": "自动备份默认目录",
+                "type": "string",
+                "default": "/backup/group_{group_id}",
+                "hint": "自动备份群配置未指定路径，或 /ol autobackup enable 未传路径时使用。支持 {group_id}、{gid}、{group} 占位符。"
+            },
             "autobackup_groups": {
                 "description": "启用自动备份的群组",
                 "type": "list",
                 "default": [],
-                "hint": "启用自动备份的群号列表。格式支持：'群号' 或 '群号:/路径'。未指定路径则默认为 /backup/group_{群号}"
+                "hint": "启用自动备份的群号列表。格式支持：'群号' 或 '群号:/路径'。未指定路径则使用自动备份默认目录。"
             },
             "backup_allowed_extensions": {
                 "description": "备份允许的文件扩展名",

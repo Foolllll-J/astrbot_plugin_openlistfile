@@ -16,6 +16,10 @@ from .lib.cache import CacheManager
 
 
 class OpenlistPlugin(Star):
+    LEGACY_ALLOWED_EXTENSIONS = {
+        ".txt", ".pdf", ".doc", ".docx", ".zip", ".rar", ".jpg", ".png", ".gif", ".mp4", ".mp3"
+    }
+
     def __init__(self, context: Context, config=None):
         super().__init__(context)
         self.user_config_managers = {}
@@ -55,6 +59,8 @@ class OpenlistPlugin(Star):
             "max_download_size": "max_download_size",
             "max_upload_size": "max_upload_size",
             "upload_mode_timeout": "upload_mode_timeout",
+            "backup_default_path": "backup_default_path",
+            "autobackup_default_path": "autobackup_default_path",
             "require_user_auth": "require_user_auth",
             "autobackup_groups": "autobackup_groups",
             "backup_allowed_extensions": "backup_allowed_extensions",
@@ -126,6 +132,58 @@ class OpenlistPlugin(Star):
             return 10
         return timeout
 
+    def _get_cache_duration_seconds(self, user_config: Dict) -> int:
+        """读取缓存有效期，单位秒。"""
+        try:
+            duration = int(user_config.get("cache_duration", 300))
+        except (TypeError, ValueError):
+            logger.warning(f"配置 cache_duration 的值无效: {user_config.get('cache_duration')!r}，已使用默认值 300 秒")
+            return 300
+        if duration < 1:
+            logger.warning(f"配置 cache_duration 的值过小: {duration}，已使用默认值 300 秒")
+            return 300
+        return duration
+
+    def _get_extension_filter(self, user_config: Dict, key: str = "allowed_extensions") -> List[str]:
+        """读取扩展名过滤配置；空列表表示不限制。"""
+        value = user_config.get(key, [])
+        if isinstance(value, str):
+            extensions = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
+        elif isinstance(value, list):
+            extensions = [str(ext).strip().lower() for ext in value if str(ext).strip()]
+        else:
+            return []
+        extensions = [ext if ext.startswith(".") else f".{ext}" for ext in extensions]
+        if key == "allowed_extensions" and set(extensions) == self.LEGACY_ALLOWED_EXTENSIONS:
+            return []
+        return extensions
+
+    def _is_extension_allowed(self, filename: str, user_config: Dict, key: str = "allowed_extensions") -> bool:
+        """判断文件扩展名是否通过配置过滤。"""
+        allowed_exts = self._get_extension_filter(user_config, key)
+        if not allowed_exts:
+            return True
+        return os.path.splitext((filename or "").lower())[1] in allowed_exts
+
+    def _format_extension_filter(self, user_config: Dict, key: str = "allowed_extensions") -> str:
+        allowed_exts = self._get_extension_filter(user_config, key)
+        return ", ".join(allowed_exts) if allowed_exts else "不限制"
+
+    def _is_admin_role(self, role) -> bool:
+        """兼容 AstrBot/适配器可能返回的数字或字符串群角色。"""
+        if isinstance(role, str):
+            role_text = role.strip().lower()
+            if role_text in ("owner", "admin", "administrator", "群主", "管理员"):
+                return True
+            try:
+                return int(role_text) >= 5
+            except ValueError:
+                return False
+        try:
+            return int(role) >= 5
+        except (TypeError, ValueError):
+            return False
+
     async def initialize(self):
         """插件初始化"""
         logger.info("Openlist文件管理插件已加载")
@@ -152,8 +210,20 @@ class OpenlistPlugin(Star):
         # 简单的合并：用户配置优先，如果用户配置为空则使用全局配置
         final_cfg = global_cfg.copy()
         for k, v in user_config.items():
-            # 只要用户设置了非空且非默认值，就覆盖全局
-            if v and v != self.get_user_config_manager(user_id).default_config.get(k):
+            default_val = self.get_user_config_manager(user_id).default_config.get(k)
+            is_default_value = v == default_val
+            if k == "allowed_extensions":
+                if isinstance(v, str):
+                    normalized_exts = [ext.strip().lower() for ext in v.split(",") if ext.strip()]
+                elif isinstance(v, list):
+                    normalized_exts = [str(ext).strip().lower() for ext in v if str(ext).strip()]
+                else:
+                    normalized_exts = []
+                normalized_exts = [ext if ext.startswith(".") else f".{ext}" for ext in normalized_exts]
+                if set(normalized_exts) == self.LEGACY_ALLOWED_EXTENSIONS:
+                    is_default_value = True
+            # 只要用户设置了非默认值，就覆盖全局；允许 0/False/[] 这类有效配置值。
+            if not is_default_value:
                 final_cfg[k] = v
                 
         return final_cfg
@@ -251,6 +321,31 @@ class OpenlistPlugin(Star):
                 candidates.append(root_path)
         return candidates
 
+    def _strip_fixed_base_directory(self, path: str, user_config: Dict) -> str:
+        """从 OpenList 返回路径中剥离下载链接前缀，得到用户视角路径。"""
+        path = self._normalize_openlist_path(path)
+        fixed_base_dir = self._normalize_openlist_path(user_config.get("fixed_base_directory", ""))
+        if fixed_base_dir != "/" and (path == fixed_base_dir or path.startswith(fixed_base_dir + "/")):
+            path = path[len(fixed_base_dir):]
+            if not path:
+                return "/"
+            if not path.startswith("/"):
+                path = "/" + path
+        return self._normalize_openlist_path(path)
+
+    def _get_item_full_path(self, user_id: str, item: Dict, user_config: Dict) -> str:
+        """根据列表项生成 OpenList 绝对路径，兼容普通列表和搜索结果。"""
+        item_name = item.get("name", "")
+        parent_path = item.get("parent")
+        if parent_path:
+            parent_path = self._strip_fixed_base_directory(parent_path, user_config)
+            return self._normalize_openlist_path(f"{parent_path.rstrip('/')}/{item_name}")
+
+        current_path = self._get_user_navigation_state(user_id).get("current_path", "/")
+        if not isinstance(current_path, str) or not current_path.startswith("/"):
+            current_path = "/"
+        return self._normalize_openlist_path(f"{current_path.rstrip('/')}/{item_name}")
+
     def _is_regular_message_event(self, event: AstrMessageEvent) -> bool:
         """过滤 notice、回调等非普通消息事件，避免上传模式误响应。"""
         message_obj = getattr(event, "message_obj", None)
@@ -297,6 +392,101 @@ class OpenlistPlugin(Star):
         elif size < 1024 * 1024: return f"{size / 1024:.1f}KB"
         elif size < 1024 * 1024 * 1024: return f"{size / (1024 * 1024):.1f}MB"
         else: return f"{size / (1024 * 1024 * 1024):.1f}GB"
+
+    def _sanitize_filename(self, filename: str, fallback: str = "file") -> str:
+        """生成可用于临时附件名的文件名片段。"""
+        safe_name = "".join(c for c in (filename or "") if c.isalnum() or c in "._- ").strip(" .")
+        return (safe_name[:100] or fallback)
+
+    def _render_backup_path(self, path_template: str, group_id) -> str:
+        """渲染备份目录模板，支持 {group_id}、{gid}、{group} 占位符。"""
+        group_id = str(group_id)
+        template = (path_template or "").strip() or f"/backup/group_{group_id}"
+        rendered = (
+            template
+            .replace("{group_id}", group_id)
+            .replace("{gid}", group_id)
+            .replace("{group}", group_id)
+        )
+        return self._normalize_openlist_path(rendered)
+
+    def _get_autobackup_target_path(self, global_cfg: Dict, group_id: str) -> Optional[str]:
+        """从自动备份群配置中解析目标路径。"""
+        group_id = str(group_id)
+        default_path = global_cfg.get("autobackup_default_path", "/backup/group_{group_id}")
+        for item in global_cfg.get("autobackup_groups", []):
+            if not isinstance(item, str):
+                continue
+            item = item.strip()
+            if not item:
+                continue
+            if ":" in item:
+                gid, path = item.split(":", 1)
+                gid = gid.strip()
+                path = path.strip()
+            else:
+                gid = item
+                path = ""
+            if gid == group_id:
+                return self._render_backup_path(path or default_path, group_id)
+        return None
+
+    async def _cleanup_temp_file(self, file_path: str, delay: int = 10):
+        """延迟清理已发送的临时文件。"""
+        await asyncio.sleep(delay)
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError as e:
+            logger.debug(f"清理临时文件失败: {file_path}, err={e}")
+
+    def _normalize_download_headers(self, headers: Dict) -> Dict[str, str]:
+        """将 OpenList link.header 转为 aiohttp 可用的单值请求头。"""
+        normalized = {}
+        if not isinstance(headers, dict):
+            return normalized
+        for key, value in headers.items():
+            if value is None:
+                continue
+            if isinstance(value, list):
+                values = [str(v) for v in value if v is not None]
+                if not values:
+                    continue
+                normalized[key] = "; ".join(values) if key.lower() == "cookie" else ",".join(values)
+            else:
+                normalized[key] = str(value)
+        return normalized
+
+    async def _send_download_link_txt(
+        self,
+        event: AstrMessageEvent,
+        file_name: str,
+        file_size: int,
+        file_path: str,
+        download_url: str,
+    ):
+        """将下载链接写入 txt 附件发送，避免长文本被平台转为图片。"""
+        links_dir = os.path.join(StarTools.get_data_dir("openlist"), "links")
+        os.makedirs(links_dir, exist_ok=True)
+        safe_base = self._sanitize_filename(file_name, "download")
+        attachment_name = f"{safe_base}_download_link.txt"
+        temp_file_path = os.path.join(
+            links_dir,
+            f"{event.get_sender_id()}_{int(time.time())}_{attachment_name}",
+        )
+        content = (
+            "OpenList 下载链接\n\n"
+            f"文件: {file_name}\n"
+            f"路径: {file_path}\n"
+            f"大小: {self._format_file_size(file_size)}\n"
+            f"链接: {download_url}\n"
+        )
+        with open(temp_file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        yield event.plain_result(f"✅ 已获取下载链接，正在作为 txt 文件发送: {file_name}")
+        yield event.chain_result([File(name=attachment_name, file=temp_file_path)])
+        asyncio.create_task(self._cleanup_temp_file(temp_file_path))
 
     def _format_file_list(self, files: List[Dict], current_path: str, user_config: Dict, user_id: str = None) -> str:
         """格式化文件列表或搜索结果"""
@@ -345,11 +535,7 @@ class OpenlistPlugin(Star):
             if is_search_result:
                 parent = item.get("parent", "")
                 if parent:
-                    fixed_base_dir = user_config.get("fixed_base_directory", "")
-                    if fixed_base_dir and parent.startswith(fixed_base_dir):
-                        parent = parent[len(fixed_base_dir):]
-                        if not parent: parent = "/"
-                        elif not parent.startswith("/"): parent = "/" + parent
+                    parent = self._strip_fixed_base_directory(parent, user_config)
                     extra_info.append(f"📍 {parent}")
                 if not is_dir or size > 0:
                     extra_info.append(f"💾 {self._format_file_size(size)}")
@@ -387,6 +573,12 @@ class OpenlistPlugin(Star):
         user_id = event.get_sender_id()
         file_name = file_item.get("name", "")
         file_size = file_item.get("size", 0)
+        if not self._is_extension_allowed(file_name, user_config):
+            yield event.plain_result(
+                f"❌ 文件类型不允许下载: {file_name}\n"
+                f"💡 当前允许: {self._format_extension_filter(user_config)}"
+            )
+            return
         max_download_size_mb = self._get_size_limit_mb(user_config, "max_download_size", 50)
         max_download_size = max_download_size_mb * 1024 * 1024
         if max_download_size_mb > 0 and file_size > max_download_size:
@@ -397,32 +589,33 @@ class OpenlistPlugin(Star):
             if full_path_override:
                 file_path = full_path_override
             else:
-                parent_path = file_item.get("parent")
-                if parent_path:
-                    fixed_base_dir = user_config.get("fixed_base_directory", "")
-                    if fixed_base_dir and parent_path.startswith(fixed_base_dir):
-                        parent_path = parent_path[len(fixed_base_dir):]
-                        if not parent_path: parent_path = "/"
-                        elif not parent_path.startswith("/"): parent_path = "/" + parent_path
-                    file_path = f"{parent_path.rstrip('/')}/{file_name}"
-                else:
-                    nav_state = self._get_user_navigation_state(user_id)
-                    current_path = nav_state["current_path"]
-                    if current_path.endswith("/"): file_path = f"{current_path}{file_name}"
-                    else: file_path = f"{current_path}/{file_name}"
+                file_path = self._get_item_full_path(user_id, file_item, user_config)
 
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
-                download_url = await client.get_download_url(file_path)
-                if not download_url:
-                    yield event.plain_result("❌ 无法获取下载链接")
+                link = await client.get_direct_download_link(file_path)
+                if not link:
+                    yield event.plain_result("❌ 无法获取真实下载链接，请确认配置账号为 OpenList 管理员或具有 /api/fs/link 权限")
+                    return
+                download_url = link["url"]
+                download_headers = self._normalize_download_headers(link.get("header", {}))
+                link_size = link.get("content_length")
+                try:
+                    link_size = int(link_size) if link_size is not None else 0
+                except (TypeError, ValueError):
+                    link_size = 0
+                if not file_size and link_size > 0:
+                    file_size = link_size
+                if max_download_size_mb > 0 and link_size > max_download_size:
+                    size_mb = link_size / (1024 * 1024)
+                    yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_download_size_mb}MB\n💡 请使用 /ol ls 获取下载链接")
                     return
                 downloads_dir = os.path.join(StarTools.get_data_dir("openlist"), "downloads")
                 os.makedirs(downloads_dir, exist_ok=True)
-                safe_filename = "".join(c for c in file_name if c.isalnum() or c in "._- ")[:100]
+                safe_filename = self._sanitize_filename(file_name)
                 temp_file_path = os.path.join(downloads_dir, f"{user_id}_{int(time.time())}_{safe_filename}")
                 yield event.plain_result(f"📥 开始下载: {file_name}\n💾 大小: {self._format_file_size(file_size)}")
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(download_url) as response:
+                    async with session.get(download_url, headers=download_headers) as response:
                         if response.status == 200:
                             with open(temp_file_path, "wb") as f:
                                 downloaded = 0
@@ -431,16 +624,14 @@ class OpenlistPlugin(Star):
                                     downloaded += len(chunk)
                                     if (file_size > 10 * 1024 * 1024 and downloaded % (10 * 1024 * 1024) < 8192):
                                         progress = (downloaded / file_size) * 100
-                                        yield event.plain_result(f"📥 下载进度: {progress:.1f}% ({self._format_file_size(downloaded)}/{self._format_file_size(file_size)})")
+                                        logger.info(
+                                            f"下载进度: {file_name} {progress:.1f}% "
+                                            f"({self._format_file_size(downloaded)}/{self._format_file_size(file_size)})"
+                                        )
                             yield event.plain_result(f"✅ 下载完成，正在发送文件...")
                             file_component = File(name=file_name, file=temp_file_path)
                             yield event.chain_result([file_component])
-                            async def cleanup_file():
-                                await asyncio.sleep(10)
-                                try:
-                                    if os.path.exists(temp_file_path): os.remove(temp_file_path)
-                                except: pass
-                            asyncio.create_task(cleanup_file())
+                            asyncio.create_task(self._cleanup_temp_file(temp_file_path))
                         else:
                             error_text = await response.text()
                             logger.error(f"用户 {user_id} 下载文件失败 - HTTP状态: {response.status}, 响应: {error_text}, 文件: {file_name}, URL: {download_url}")
@@ -458,17 +649,15 @@ class OpenlistPlugin(Star):
         if full_path:
             file_path = full_path
         else:
-            nav_state = self._get_user_navigation_state(user_id)
-            file_name = item.get("name", "")
-            parent_path = item.get("parent", nav_state.get("current_path", "/"))
+            file_path = self._get_item_full_path(user_id, item, user_config)
 
-            fixed_base_dir = user_config.get("fixed_base_directory", "")
-            if item.get("parent") and fixed_base_dir and parent_path.startswith(fixed_base_dir):
-                parent_path = parent_path[len(fixed_base_dir):]
-                if not parent_path: parent_path = "/"
-                elif not parent_path.startswith("/"): parent_path = "/" + parent_path
-
-            file_path = f"{parent_path.rstrip('/')}/{file_name}"
+        file_name = item.get("name", "")
+        if not self._is_extension_allowed(file_name, user_config):
+            yield event.plain_result(
+                f"❌ 文件类型不允许获取链接: {file_name}\n"
+                f"💡 当前允许: {self._format_extension_filter(user_config)}"
+            )
+            return
 
         try:
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
@@ -476,12 +665,8 @@ class OpenlistPlugin(Star):
                 if download_url:
                     name = item.get("name", "")
                     size = item.get("size", 0)
-                    result_text = f"📥 下载链接\n\n"
-                    result_text += f"📄 文件: {name}\n"
-                    result_text += f"💾 大小: {self._format_file_size(size)}\n"
-                    result_text += f"🔗 链接: {download_url}\n\n"
-                    result_text += "💡 提示: 请复制链接并在浏览器中打开以下载文件。"
-                    yield event.plain_result(result_text)
+                    async for result in self._send_download_link_txt(event, name, size, file_path, download_url):
+                        yield result
                 else:
                     logger.warning(f"用户 {user_id} 无法获取下载链接 - 路径: {file_path}, 文件名: {item.get('name', '')}")
                     yield event.plain_result(f"❌ 无法获取下载链接，文件可能不存在或为目录: {file_path}")
@@ -518,7 +703,9 @@ class OpenlistPlugin(Star):
                     user_config.get("token", ""),
                     user_config.get("fixed_base_directory", "")
                 ) as client:
-                    await client.mkdir(target_path)
+                    if not await client.ensure_dir(target_path):
+                        logger.error(f"❌ [自动备份] 创建目标目录失败: {target_path}")
+                        return
                     if file_url and file_size is not None:
                         logger.info(f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}")
                         success = await client.upload_url_stream(file_url, target_path, file_name, file_size)
@@ -543,6 +730,7 @@ class OpenlistPlugin(Star):
 
                     if success:
                         logger.info(f"✅ [自动备份] 文件 {file_name} 上传成功。")
+                        self.cache_manager.clear_cache()
                     else:
                         logger.error(f"❌ [自动备份] 文件 {file_name} 上传失败。")
             except Exception as e:
@@ -587,29 +775,12 @@ class OpenlistPlugin(Star):
                     return
                 
                 global_cfg = self.get_global_config()
-                autobackup_groups = global_cfg.get("autobackup_groups", [])
-                
-                target_path = None
-                for item in autobackup_groups:
-                    if ":" in item:
-                        gid, path = item.split(":", 1)
-                        if gid == group_id:
-                            target_path = path
-                            break
-                    elif item == group_id:
-                        target_path = f"/backup/group_{group_id}"
-                        break
+                target_path = self._get_autobackup_target_path(global_cfg, group_id)
                 
                 if not target_path:
                     return
                 
-                user_id = event.get_sender_id()
-                user_config = self.get_user_config(user_id)
-                
-                # 如果用户未配置 Openlist 地址，则使用全局配置中的备份相关参数
-                if not self._validate_config(user_config):
-                    user_config = global_cfg
-                
+                user_config = global_cfg
                 if not self._validate_config(user_config):
                     logger.warning(f"⚠️ [自动备份] 群 {group_id} 触发了自动备份，但未找到有效的 Openlist 配置。")
                     return
@@ -632,7 +803,7 @@ class OpenlistPlugin(Star):
                     return
                 
                 # 使用配置中的备份过滤条件
-                allowed_exts = user_config.get("backup_allowed_extensions", [])
+                allowed_exts = self._get_extension_filter(user_config, "backup_allowed_extensions")
                 if allowed_exts:
                     ext = os.path.splitext(file_name.lower())[1]
                     if ext not in allowed_exts:
@@ -688,6 +859,12 @@ class OpenlistPlugin(Star):
             yield event.plain_result("出现异常，请稍后尝试上传")
             logger.warning(f"用户 {user_id} 上传文件失败：无法从原始消息中解析出有效的文件名。")
             return
+        if not self._is_extension_allowed(file_name, user_config):
+            yield event.plain_result(
+                f"❌ 文件类型不允许上传: {file_name}\n"
+                f"💡 当前允许: {self._format_extension_filter(user_config)}"
+            )
+            return
 
         raw_file_size_int = None
         if raw_file_size not in (None, ""):
@@ -721,6 +898,7 @@ class OpenlistPlugin(Star):
                     success = await client.upload_url_stream(upload_url, target_path, file_name, raw_file_size_int)
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
+                        self.cache_manager.clear_cache(user_id)
                         self._set_user_upload_waiting(upload_state_key, False)
                         result = await client.list_files(target_path)
                         if result:
@@ -768,6 +946,7 @@ class OpenlistPlugin(Star):
                     success = await client.upload_file(file_path, target_path, file_name)
                     if success:
                         yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
+                        self.cache_manager.clear_cache(user_id)
                         self._set_user_upload_waiting(upload_state_key, False)
                         result = await client.list_files(target_path)
                         if result:
@@ -835,7 +1014,7 @@ class OpenlistPlugin(Star):
                 yield event.plain_result("❌ 未找到任何群文件或获取失败。")
             return
             
-        allowed_exts = user_config.get("backup_allowed_extensions", [])
+        allowed_exts = self._get_extension_filter(user_config, "backup_allowed_extensions")
         max_size_mb = self._get_size_limit_mb(user_config, "backup_max_size", 0)
         max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
         
@@ -888,14 +1067,9 @@ class OpenlistPlugin(Star):
                     target_dir = f"{target_path.rstrip('/')}/{file_dir}".rstrip("/")
                     
                     try:
-                        if file_dir:
-                            parts = file_dir.split("/")
-                            curr = target_path.rstrip("/")
-                            for p in parts:
-                                curr = f"{curr}/{p}"
-                                await client.mkdir(curr)
-                        else:
-                            await client.mkdir(target_path)
+                        if not await client.ensure_dir(target_dir or target_path):
+                            fail_count += 1
+                            return
                             
                         url_res = await bot.api.call_action("get_group_file_url", group_id=group_id, file_id=file_id, busid=item.get("busid", 0))
                         download_url = url_res.get("url")
@@ -930,8 +1104,12 @@ class OpenlistPlugin(Star):
                 logger.info(f"⏳ 备份进度: {min(i+batch_size, total)}/{total} (成功: {success_count}, 失败: {fail_count})")
                 
         if not is_auto:
+            if success_count:
+                self.cache_manager.clear_cache()
             yield event.plain_result(f"✅ 备份任务结束!\n📊 统计: 总计 {total}, 成功 {success_count}, 失败 {fail_count}\n📂 目标: {target_path}")
         else:
+            if success_count:
+                self.cache_manager.clear_cache()
             logger.info(f"✅ [自动备份] 任务结束。群 {group_id}: 成功 {success_count}, 失败 {fail_count}")
 
     async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
@@ -954,6 +1132,12 @@ class OpenlistPlugin(Star):
                 else:
                     ext = ".jpg"
                 filename = f"image_{timestamp}{ext}"
+                if not self._is_extension_allowed(filename, user_config):
+                    yield event.plain_result(
+                        f"❌ 图片类型不允许上传: {filename}\n"
+                        f"💡 当前允许: {self._format_extension_filter(user_config)}"
+                    )
+                    return
                 file_size = os.path.getsize(image_path)
                 max_upload_size_mb = self._get_size_limit_mb(user_config, "max_upload_size", 100)
                 max_upload_size = max_upload_size_mb * 1024 * 1024
@@ -966,6 +1150,7 @@ class OpenlistPlugin(Star):
                     success = await client.upload_file(image_path, target_path, filename)
                     if success:
                         yield event.plain_result(f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
+                        self.cache_manager.clear_cache(user_id)
                         self._set_user_upload_waiting(upload_state_key, False)
                         result = await client.list_files(target_path)
                         if result:
@@ -1047,7 +1232,7 @@ class OpenlistPlugin(Star):
                 "max_display_files", "public_openlist_url", 
                 "fixed_base_directory", "allowed_extensions", "max_preview_size", "text_preview_length",
                 "enable_cache", "cache_duration", "max_download_size", "max_upload_size", "upload_mode_timeout",
-                "backup_allowed_extensions", "backup_max_size"
+                "backup_default_path", "backup_allowed_extensions", "backup_max_size"
             ]
             if key not in valid_keys:
                 yield event.plain_result(f"❌ 未知的配置项: {key}。可用配置项: {', '.join(valid_keys)}")
@@ -1088,7 +1273,10 @@ class OpenlistPlugin(Star):
             elif key in ["allowed_extensions", "backup_allowed_extensions"]:
                 # 允许输入逗号分隔的字符串，存为列表
                 if isinstance(value, str):
-                    value = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
+                    if value.strip().lower() in ("none", "null", "empty", "clear", "all", "*", "空", "不限", "不限制"):
+                        value = []
+                    else:
+                        value = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
                     # 确保后缀带点
                     value = [ext if ext.startswith(".") else f".{ext}" for ext in value]
             
@@ -1136,8 +1324,7 @@ class OpenlistPlugin(Star):
             item = self._get_item_by_number(user_id, number)
             if item:
                 if item.get("is_dir", False):
-                    item_name = item.get("name", "")
-                    target_path = self._resolve_target_path(user_id, item_name)
+                    target_path = self._get_item_full_path(user_id, item, user_config)
                     path_candidates = [target_path]
                 else:
                     async for result in self._get_and_send_download_link(event, item, user_config):
@@ -1149,6 +1336,8 @@ class OpenlistPlugin(Star):
         else:
             path_candidates = self._resolve_path_candidates(user_id, path)
         try:
+            cache_enabled = str(user_config.get("enable_cache", True)).lower() not in ("false", "0", "no", "off")
+            cache_duration = self._get_cache_duration_seconds(user_config)
             async with OpenlistClient(user_config["openlist_url"], user_config.get("public_openlist_url", ""), user_config.get("username", ""), user_config.get("password", ""), user_config.get("token", ""), user_config.get("fixed_base_directory", "")) as client:
                 for candidate_path in path_candidates:
                     file_info = await client.get_file_info(candidate_path)
@@ -1157,7 +1346,23 @@ class OpenlistPlugin(Star):
                             yield result
                         return
 
-                    list_result = await client.list_files(candidate_path, per_page=0)
+                    list_result = None
+                    if cache_enabled:
+                        list_result = self.cache_manager.get_cache(
+                            user_config["openlist_url"],
+                            candidate_path,
+                            user_id,
+                            cache_duration,
+                        )
+                    if list_result is None:
+                        list_result = await client.list_files(candidate_path, per_page=0)
+                        if list_result is not None and cache_enabled:
+                            self.cache_manager.set_cache(
+                                user_config["openlist_url"],
+                                candidate_path,
+                                user_id,
+                                list_result,
+                            )
                     if list_result is not None:
                         files = list_result.get("content") or []
                         self._update_user_navigation_state(user_id, candidate_path, files)
@@ -1229,6 +1434,7 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 请提供搜索关键词")
             return
         user_id = event.get_sender_id()
+        path = self._resolve_target_path(user_id, path)
         user_config = self.get_user_config(user_id)
         if not self._validate_config(user_config):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
@@ -1278,6 +1484,7 @@ class OpenlistPlugin(Star):
                     modified = file_info.get("modified", "")
                     is_dir = file_info.get("is_dir", False)
                     provider = file_info.get("provider", "")
+                    download_url = None
                     info_text = f"📋 文件信息\n\n"
                     info_text += f"📄 名称: {name}\n"
                     info_text += f"📁 类型: {'目录' if is_dir else '文件'}\n"
@@ -1286,9 +1493,16 @@ class OpenlistPlugin(Star):
                     if modified: info_text += f"📅 修改时间: {modified.replace('T', ' ').split('.')[0]}\n"
                     if provider: info_text += f"🔗 存储: {provider}\n"
                     if not is_dir:
-                        download_url = await client.get_download_url(target_path)
-                        if download_url: info_text += f"\n🔗 下载链接:\n{download_url}"
+                        if self._is_extension_allowed(name, user_config):
+                            download_url = await client.get_download_url(target_path)
+                            if download_url:
+                                info_text += "\n🔗 下载链接将作为 txt 附件发送。"
+                        else:
+                            info_text += f"\n🔗 下载链接: 文件类型不允许（当前允许: {self._format_extension_filter(user_config)}）"
                     yield event.plain_result(info_text)
+                    if download_url:
+                        async for result in self._send_download_link_txt(event, name, size, target_path, download_url):
+                            yield result
                 else:
                     display_path = " / ".join(path_candidates)
                     logger.warning(f"用户 {user_id} 文件不存在: {display_path}")
@@ -1480,14 +1694,14 @@ class OpenlistPlugin(Star):
             yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
             return
             
-        target_path = "/"
+        target_path_arg = None
         target_group_id = 0
         
         # 1. 智能解析参数
         for arg in [arg1, arg2]:
             if not arg: continue
             if arg.startswith("/"):
-                target_path = arg
+                target_path_arg = arg
             elif arg.startswith("@"):
                 try:
                     target_group_id = int(arg[1:])
@@ -1505,6 +1719,11 @@ class OpenlistPlugin(Star):
             else:
                 yield event.plain_result("❌ 请指定群号（以 @ 开头）或在群聊中使用。")
                 return
+
+        target_path = self._render_backup_path(
+            target_path_arg or user_config.get("backup_default_path", "/backup/group_{group_id}"),
+            target_group_id,
+        )
                 
         async for result in self._backup_group_files(event, target_group_id, target_path, user_config):
             yield result
@@ -1513,7 +1732,9 @@ class OpenlistPlugin(Star):
     async def autobackup_command(self, event: AstrMessageEvent, action: str, arg1: str = None, arg2: str = None):
         """配置自动备份"""
         global_cfg = self.get_global_config()
-        if not global_cfg.get("require_user_auth", True) and event.message_obj.sender.role < 5:
+        sender = getattr(event.message_obj, "sender", None)
+        sender_role = getattr(sender, "role", 0)
+        if not self._is_admin_role(sender_role):
             yield event.plain_result("❌ 权限不足。")
             return
         
@@ -1543,9 +1764,10 @@ class OpenlistPlugin(Star):
         groups = local_cfg.get("autobackup_groups", [])
         
         if action == "enable":
-            # enable 必须有路径，没有则用默认
-            if not target_path:
-                target_path = f"/backup/group_{target_gid}"
+            target_path = self._render_backup_path(
+                target_path or global_cfg.get("autobackup_default_path", "/backup/group_{group_id}"),
+                target_gid,
+            )
                 
             new_entry = f"{target_gid}:{target_path}"
             # 过滤掉旧的该群配置
@@ -1653,6 +1875,8 @@ class OpenlistPlugin(Star):
 
                 success_count = 0
                 fail_count = 0
+                max_download_size_mb = self._get_size_limit_mb(user_config, "max_download_size", 50)
+                max_download_size = max_download_size_mb * 1024 * 1024
                 
                 downloads_dir = os.path.join(StarTools.get_data_dir("openlist"), "downloads")
                 os.makedirs(downloads_dir, exist_ok=True)
@@ -1663,17 +1887,40 @@ class OpenlistPlugin(Star):
                     rel_path = item["relative_path"]
                     
                     try:
+                        if not self._is_extension_allowed(file_name, user_config):
+                            logger.info(f"跳过恢复文件 {file_name}: 后缀不在允许范围内。")
+                            fail_count += 1
+                            continue
+
+                        item_size = item.get("size", 0)
+                        if max_download_size_mb > 0 and item_size and item_size > max_download_size:
+                            logger.info(f"跳过恢复文件 {file_name}: 大小 {item_size} 超过限制 {max_download_size_mb}MB。")
+                            fail_count += 1
+                            continue
+
                         # 1. 下载文件
-                        download_url = await client.get_download_url(full_path)
-                        if not download_url:
-                            logger.warning(f"无法获取下载链接: {full_path}")
+                        link = await client.get_direct_download_link(full_path)
+                        if not link:
+                            logger.warning(f"无法获取真实下载链接: {full_path}")
+                            fail_count += 1
+                            continue
+                        download_url = link["url"]
+                        download_headers = self._normalize_download_headers(link.get("header", {}))
+                        link_size = link.get("content_length")
+                        try:
+                            link_size = int(link_size) if link_size is not None else 0
+                        except (TypeError, ValueError):
+                            link_size = 0
+                        if max_download_size_mb > 0 and link_size > max_download_size:
+                            logger.info(f"跳过恢复文件 {file_name}: 下载链接大小 {link_size} 超过限制 {max_download_size_mb}MB。")
                             fail_count += 1
                             continue
                         
-                        temp_file_path = os.path.join(downloads_dir, f"restore_{int(time.time())}_{file_name}")
+                        safe_filename = self._sanitize_filename(file_name)
+                        temp_file_path = os.path.join(downloads_dir, f"restore_{int(time.time())}_{safe_filename}")
                         
                         async with aiohttp.ClientSession() as session:
-                            async with session.get(download_url) as response:
+                            async with session.get(download_url, headers=download_headers) as response:
                                 if response.status == 200:
                                     with open(temp_file_path, "wb") as f:
                                         async for chunk in response.content.iter_chunked(8192):
@@ -1791,7 +2038,7 @@ class OpenlistPlugin(Star):
                 if item.get("is_dir"):
                     yield event.plain_result("❌ 无法预览目录，请指定一个文件。")
                     return
-                full_path = self._resolve_target_path(user_id, item["name"])
+                full_path = self._get_item_full_path(user_id, item, user_config)
             else:
                 yield event.plain_result(f"❌ 序号 {number} 无效")
                 return
@@ -1818,6 +2065,12 @@ class OpenlistPlugin(Star):
                 file_name = item.get("name", "")
                 file_size = item.get("size", 0)
                 ext = os.path.splitext(file_name)[1].lower()
+                if not self._is_extension_allowed(file_name, user_config):
+                    yield event.plain_result(
+                        f"❌ 文件类型不允许预览: {file_name}\n"
+                        f"💡 当前允许: {self._format_extension_filter(user_config)}"
+                    )
+                    return
                 
                 # 压缩包预览支持 (使用 API)
                 archive_extensions = [".zip", ".tar", ".gz", ".7z", ".rar", ".bz2", ".xz"]
@@ -1856,20 +2109,23 @@ class OpenlistPlugin(Star):
 
                 yield event.plain_result(f"🔍 正在获取预览: {file_name}...")
                 
-                # 获取下载链接
-                download_url = await client.get_download_url(full_path)
-                if not download_url:
-                    yield event.plain_result("❌ 获取下载链接失败")
+                # 获取真实下载链接
+                link = await client.get_direct_download_link(full_path)
+                if not link:
+                    yield event.plain_result("❌ 获取真实下载链接失败，请确认配置账号为 OpenList 管理员或具有 /api/fs/link 权限")
                     return
+                download_url = link["url"]
+                download_headers = self._normalize_download_headers(link.get("header", {}))
 
                 # 下载到临时目录
                 temp_dir = os.path.join(StarTools.get_data_dir("openlist"), "temp_preview")
                 os.makedirs(temp_dir, exist_ok=True)
-                temp_file_path = os.path.join(temp_dir, f"preview_{int(time.time())}_{file_name}")
+                safe_filename = self._sanitize_filename(file_name)
+                temp_file_path = os.path.join(temp_dir, f"preview_{int(time.time())}_{safe_filename}")
                 
                 try:
                     async with aiohttp.ClientSession() as session:
-                        async with session.get(download_url) as resp:
+                        async with session.get(download_url, headers=download_headers) as resp:
                             if resp.status == 200:
                                 with open(temp_file_path, "wb") as f:
                                     async for chunk in resp.content.iter_chunked(1024 * 1024):
@@ -1941,10 +2197,13 @@ class OpenlistPlugin(Star):
             number = int(path)
             item = self._get_item_by_number(user_id, number)
             if item:
-                nav_state = self._get_user_navigation_state(user_id)
-                target_dir = self._normalize_openlist_path(nav_state["current_path"])
-                target_names = [item["name"]]
-                display_name = item["name"]
+                full_path = self._get_item_full_path(user_id, item, user_config)
+                if full_path == "/":
+                    yield event.plain_result("❌ 不允许删除根目录。")
+                    return
+                target_dir = posixpath.dirname(full_path) or "/"
+                target_names = [posixpath.basename(full_path)]
+                display_name = full_path
             else:
                 yield event.plain_result(f"❌ 序号 {number} 无效。")
                 return
@@ -1962,6 +2221,7 @@ class OpenlistPlugin(Star):
                 success = await client.remove(target_dir, target_names)
                 if success:
                     yield event.plain_result(f"✅ 已删除: {display_name}")
+                    self.cache_manager.clear_cache(user_id)
                     
                     # 检查是否删除了当前路径或其父目录
                     nav_state = self._get_user_navigation_state(user_id)
@@ -2028,6 +2288,7 @@ class OpenlistPlugin(Star):
                 success = await client.mkdir(full_path)
                 if success:
                     yield event.plain_result(f"✅ 已创建文件夹: {name}")
+                    self.cache_manager.clear_cache(user_id)
                     # 如果在当前目录下创建，刷新列表
                     nav_state = self._get_user_navigation_state(user_id)
                     current_path = self._normalize_openlist_path(nav_state["current_path"])
@@ -2063,7 +2324,7 @@ class OpenlistPlugin(Star):
      - 示例: `/ol ls` 或 `/ol ls /movies`
    - 进入子目录:
      - 示例: `/ol ls 1` (如果1是目录)
-   - 获取链接: 获取文件的下载链接。
+   - 获取链接: 获取文件的下载链接，并以 txt 附件发送。
      - 示例: `/ol ls 2` (如果2是文件)
 
 ▶️ `/ol next` - 下一页
@@ -2112,7 +2373,7 @@ class OpenlistPlugin(Star):
 📦 `/ol backup [/目标路径] [@群号]`
    - 将指定群聊的所有文件递归备份到 Openlist。
    - 示例: `/ol backup /群备份 @123456`
-   - 提示: 路径须以 `/` 开头，群号须以 `@` 开头。默认备份当前群到根目录。
+   - 提示: 路径须以 `/` 开头，群号须以 `@` 开头。未指定路径时使用 `backup_default_path`。
 
 🔄 `/ol autobackup <enable|disable> [@群号] [/路径]`
    - 配置群文件自动备份（新上传文件自动同步）。
