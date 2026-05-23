@@ -171,18 +171,85 @@ class OpenlistPlugin(Star):
 
     def _is_admin_role(self, role) -> bool:
         """兼容 AstrBot/适配器可能返回的数字或字符串群角色。"""
+        if role is None:
+            return False
+        for attr in ("name", "value"):
+            attr_value = getattr(role, attr, None)
+            if attr_value is not None and attr_value is not role:
+                if self._is_admin_role(attr_value):
+                    return True
         if isinstance(role, str):
             role_text = role.strip().lower()
-            if role_text in ("owner", "admin", "administrator", "群主", "管理员"):
+            if "." in role_text:
+                role_text = role_text.rsplit(".", 1)[-1]
+            if role_text in ("owner", "admin", "administrator", "superuser", "super_admin", "root", "群主", "管理员"):
                 return True
+            if role_text in ("member", "normal", "user", "guest", "成员", "群员", "普通用户"):
+                return False
             try:
-                return int(role_text) >= 5
+                return int(role_text) >= 2
             except ValueError:
                 return False
         try:
-            return int(role) >= 5
+            return int(role) >= 2
         except (TypeError, ValueError):
             return False
+
+    def _read_value(self, obj, key: str, default=None):
+        """从对象或映射中读取字段，兼容适配器原始事件对象。"""
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        value = getattr(obj, key, default)
+        if value is not default:
+            return value
+        try:
+            return obj[key]
+        except Exception:
+            return default
+
+    def _extract_sender_role(self, event: AstrMessageEvent):
+        """尽量从 AstrBot 事件和平台原始事件中提取发送者群角色。"""
+        candidates = []
+
+        role = getattr(event, "role", None)
+        if role is not None:
+            candidates.append(role)
+
+        message_obj = getattr(event, "message_obj", None)
+        sender = self._read_value(message_obj, "sender")
+        for key in ("role", "permission"):
+            value = self._read_value(sender, key)
+            if value is not None:
+                candidates.append(value)
+
+        raw_message = self._read_value(message_obj, "raw_message")
+        raw_sender = self._read_value(raw_message, "sender")
+        for key in ("role", "permission"):
+            value = self._read_value(raw_sender, key)
+            if value is not None:
+                candidates.append(value)
+        raw_role = self._read_value(raw_message, "role")
+        if raw_role is not None:
+            candidates.append(raw_role)
+
+        for candidate in candidates:
+            if candidate not in (None, ""):
+                return candidate
+        return None
+
+    def _is_event_admin(self, event: AstrMessageEvent) -> bool:
+        """判断事件发送者是否为管理员，优先使用 AstrBot 能力，再回退到平台原始角色。"""
+        is_admin = getattr(event, "is_admin", None)
+        if callable(is_admin):
+            try:
+                if is_admin():
+                    return True
+            except Exception as e:
+                logger.debug(f"调用 event.is_admin() 失败，继续使用角色字段判断: {e}")
+
+        return self._is_admin_role(self._extract_sender_role(event))
 
     async def initialize(self):
         """插件初始化"""
@@ -1729,13 +1796,47 @@ class OpenlistPlugin(Star):
             yield result
 
     @openlist_group.command("autobackup", alias="自动备份")
-    async def autobackup_command(self, event: AstrMessageEvent, action: str, arg1: str = None, arg2: str = None):
+    async def autobackup_command(self, event: AstrMessageEvent, action: str = "show", arg1: str = None, arg2: str = None):
         """配置自动备份"""
         global_cfg = self.get_global_config()
-        sender = getattr(event.message_obj, "sender", None)
-        sender_role = getattr(sender, "role", 0)
-        if not self._is_admin_role(sender_role):
+        if not self._is_event_admin(event):
+            logger.warning(
+                f"自动备份配置权限不足: user={event.get_sender_id()}, "
+                f"group={getattr(event.message_obj, 'group_id', '')}, "
+                f"role={self._extract_sender_role(event)!r}"
+            )
             yield event.plain_result("❌ 权限不足。")
+            return
+
+        action = (action or "show").lower()
+        if action in ("show", "status", "list", "状态", "列表"):
+            effective_groups = global_cfg.get("autobackup_groups", [])
+            lines = ["🔄 自动备份配置", ""]
+            if effective_groups:
+                lines.append("已启用群组:")
+                for item in effective_groups:
+                    if not isinstance(item, str):
+                        continue
+                    if ":" in item:
+                        gid, path = item.split(":", 1)
+                        path = self._render_backup_path(path, gid)
+                    else:
+                        gid = item
+                        path = self._render_backup_path(
+                            global_cfg.get("autobackup_default_path", "/backup/group_{group_id}"),
+                            gid,
+                        )
+                    lines.append(f"• 群 {gid} -> {path}")
+            else:
+                lines.append("当前没有启用自动备份的群组。")
+            lines.extend([
+                "",
+                "用法:",
+                "/ol autobackup enable [@群号] [/OpenList路径]",
+                "/ol autobackup disable [@群号]",
+                "未指定群号时使用当前群；未指定路径时使用 autobackup_default_path。",
+            ])
+            yield event.plain_result("\n".join(lines))
             return
         
         target_gid = None
@@ -1762,7 +1863,7 @@ class OpenlistPlugin(Star):
 
         local_cfg = self.global_config_manager.load_config()
         groups = local_cfg.get("autobackup_groups", [])
-        
+
         if action == "enable":
             target_path = self._render_backup_path(
                 target_path or global_cfg.get("autobackup_default_path", "/backup/group_{group_id}"),
