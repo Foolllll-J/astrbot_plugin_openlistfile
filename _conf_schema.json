@@ -1,204 +1,189 @@
 {
-    "global_settings": {
-        "description": "全局设置",
+    "connection": {
         "type": "object",
+        "description": "服务器连接",
+        "hint": "配置 OpenList 服务器地址与认证信息。",
         "items": {
             "default_openlist_url": {
-                "description": "默认Openlist服务器地址",
+                "description": "OpenList 地址",
                 "type": "string",
                 "default": "",
-                "hint": "http://localhost:5244"
+                "hint": "例如 http://localhost:5244 。"
             },
             "public_openlist_url": {
-                "description": "Openlist公网服务地址 (可选)",
+                "description": "公网地址",
                 "type": "string",
                 "default": "",
-                "hint": "当默认地址是内网地址时，可用于构建公网下载链接"
+                "hint": "可选，当默认地址是内网地址时，用于生成外部可访问的下载链接。"
             },
             "default_username": {
-                "description": "默认用户名",
+                "description": "登录用户名",
                 "type": "string",
                 "default": "",
-                "hint": "留空表示匿名访问"
+                "hint": "留空表示匿名访问。"
             },
             "default_password": {
-                "description": "默认密码",
+                "description": "登录密码",
                 "type": "string",
                 "default": "",
-                "hint": "用户名为空时可忽略"
-            },
-            "default_token": {
-                "description": "默认访问Token",
-                "type": "string",
-                "default": "",
-                "hint": "可选，优先级高于用户名密码"
+                "hint": "用户名不为空时必填。"
             },
             "fixed_base_directory": {
-                "description": "下载/真实链接前缀路径",
+                "description": "下载路径前缀",
                 "type": "string",
                 "default": "",
-                "hint": "用于 /d、/p 和 /api/fs/link 等真实下载路径。例如: /夸克；留空则不添加前缀。"
-            },
+                "hint": "用于补齐实际根路径前缀，适用于如当前用户根目录与 OpenList 实际根目录不一致的场景；留空则不添加前缀。"
+            }
+        }
+    },
+    "display": {
+        "type": "object",
+        "description": "显示与预览",
+        "hint": "控制文件列表显示与预览行为。",
+        "items": {
             "max_display_files": {
                 "description": "最大显示文件数",
                 "type": "int",
                 "default": 20,
+                "minimum": 1,
+                "maximum": 100,
                 "slider": {
                     "min": 1,
                     "max": 100,
                     "step": 1
-                }
-            },
-            "allowed_extensions": {
-                "description": "允许的文件扩展名",
-                "type": "text",
-                "default": "",
-                "hint": "用逗号分隔，如: .txt,.pdf,.jpg。留空表示不限制；设置后会限制下载、取链接、预览和上传。"
+                },
+                "hint": "每页列表显示的最大文件数。"
             },
             "max_preview_size": {
-                "description": "最大预览文件大小(MB)",
+                "description": "最大预览文件大小（MB）",
                 "type": "int",
-                "default": 10
+                "default": 10,
+                "minimum": 1,
+                "maximum": 500,
+                "slider": {
+                    "min": 1,
+                    "max": 500,
+                    "step": 1
+                },
+                "hint": "超过此大小的文件不会进行内容预览。"
             },
             "text_preview_length": {
-                "description": "文本文件预览长度",
+                "description": "文本文件预览长度（字符）",
                 "type": "int",
+                "default": 1000,
+                "minimum": 100,
+                "maximum": 4000,
                 "slider": {
                     "min": 100,
                     "max": 4000,
                     "step": 100
                 },
-                "default": 1000
-            },
+                "hint": "预览文本文件时最多显示的字符数。"
+            }
+        }
+    },
+    "cache": {
+        "type": "object",
+        "description": "缓存",
+        "hint": "控制文件列表缓存的开关与有效期。",
+        "items": {
             "enable_cache": {
                 "description": "启用文件列表缓存",
                 "type": "bool",
-                "default": true
+                "default": true,
+                "hint": "开启后文件列表结果会被缓存，减少重复请求。"
             },
             "cache_duration": {
-                "description": "缓存有效期(秒)",
+                "description": "缓存有效期（秒）",
                 "type": "int",
                 "default": 300,
                 "minimum": 60,
-                "maximum": 3600
-            },
-            "max_download_size": {
-                "description": "最大下载文件大小(MB)",
-                "type": "int",
-                "slider": {
-                    "min": 0,
-                    "max": 500,
-                    "step": 1
-                },
-                "default": 50,
-                "hint": "0 表示不限制。"
-            },
+                "maximum": 3600,
+                "hint": "缓存过期后自动刷新。"
+            }
+        }
+    },
+    "transfer": {
+        "type": "object",
+        "description": "文件传输",
+        "hint": "上传与下载的大小限制、分块参数及扩展名过滤。",
+        "items": {
             "max_upload_size": {
-                "description": "最大上传文件大小(MB)",
+                "description": "最大上传文件大小（MB）",
                 "type": "int",
+                "default": 100,
+                "minimum": 0,
+                "maximum": 10240,
                 "slider": {
                     "min": 0,
                     "max": 10240,
                     "step": 1
                 },
-                "default": 100,
                 "hint": "0 表示不限制。"
             },
-            "upload_mode_timeout": {
-                "description": "上传模式持续时间(分钟)",
+            "max_download_size": {
+                "description": "最大下载文件大小（MB）",
                 "type": "int",
+                "default": 50,
+                "minimum": 0,
+                "maximum": 500,
                 "slider": {
-                    "min": 1,
-                    "max": 1440,
+                    "min": 0,
+                    "max": 500,
                     "step": 1
                 },
-                "default": 10,
-                "hint": "开启上传模式后，超过该时间未完成上传会自动取消。"
-            },
-            "upload_retry_attempts": {
-                "description": "上传单文件尝试次数",
-                "type": "int",
-                "default": 3,
-                "hint": "普通上传失败时最多尝试次数，包含首次尝试。"
-            },
-            "upload_retry_delay": {
-                "description": "上传重试间隔(秒)",
-                "type": "int",
-                "default": 5,
-                "hint": "同一文件两次上传尝试之间的等待时间。"
+                "hint": "0 表示不限制。"
             },
             "upload_chunk_size_mb": {
-                "description": "上传分块大小(MB)",
+                "description": "上传分块大小（MB）",
                 "type": "int",
                 "default": 4,
-                "hint": "本地/URL中转上传时每次读取的块大小。"
+                "minimum": 1,
+                "maximum": 64,
+                "hint": "上传文件时每次读取的块大小，越大则内存占用越高。"
             },
-            "upload_progress_step_mb": {
-                "description": "上传进度日志间隔(MB)",
-                "type": "int",
-                "default": 64,
-                "hint": "仅 debug_transfer_logging 开启时生效。"
-            },
-            "upstream_connect_timeout": {
-                "description": "上游URL连接超时(秒)",
-                "type": "int",
-                "default": 60
-            },
-            "upstream_read_timeout": {
-                "description": "上游URL无数据超时(秒)",
-                "type": "int",
-                "default": 180
-            },
-            "openlist_connect_timeout": {
-                "description": "OpenList上传连接超时(秒)",
-                "type": "int",
-                "default": 30
-            },
-            "openlist_upload_response_timeout": {
-                "description": "OpenList上传响应超时(秒)",
-                "type": "int",
-                "default": 3000
-            },
-            "debug_transfer_logging": {
-                "description": "启用传输诊断日志",
-                "type": "bool",
-                "default": false,
-                "hint": "开启后输出上传/下载进度、连接信息和 DNS 解析等详细日志。"
-            },
-            "require_user_auth": {
-                "description": "要求用户认证",
-                "type": "bool",
-                "default": true,
-                "hint": "启用后每个用户需要独立配置"
-            },
+            "allowed_extensions": {
+                "description": "允许的文件扩展名",
+                "type": "text",
+                "default": "",
+                "hint": "用逗号分隔，如：txt,pdf,jpg。留空表示不限制；设置后会限制上传和下载（取链接、恢复）。显示和预览不受此限制影响。"
+            }
+        }
+    },
+    "backup": {
+        "type": "object",
+        "description": "群文件备份",
+        "hint": "备份路径与过滤配置。",
+        "items": {
             "backup_default_path": {
-                "description": "手动备份默认目录",
+                "description": "备份默认目录",
                 "type": "string",
                 "default": "/backup/group_{group_id}",
-                "hint": "使用 /ol backup 且未指定路径时的 OpenList 目录。支持 {group_id}、{gid}、{group} 占位符。"
-            },
-            "autobackup_default_path": {
-                "description": "自动备份默认目录",
-                "type": "string",
-                "default": "/backup/group_{group_id}",
-                "hint": "自动备份群配置未指定路径，或 /ol autobackup enable 未传路径时使用。支持 {group_id}、{gid}、{group} 占位符。"
+                "hint": "使用 /ol backup 且未指定路径时的 OpenList 目录。支持 {group_id} 占位符。"
             },
             "autobackup_groups": {
                 "description": "启用自动备份的群组",
                 "type": "list",
                 "default": [],
-                "hint": "启用自动备份的群号列表。格式支持：'群号' 或 '群号:/路径'。未指定路径则使用自动备份默认目录。"
+                "hint": "启用自动备份的群号列表。格式支持：「群号」或「群号:/路径」。未指定路径则使用备份默认目录。"
             },
             "backup_allowed_extensions": {
                 "description": "备份允许的文件扩展名",
                 "type": "text",
                 "default": "",
-                "hint": "用逗号分隔，如: .txt,.pdf。留空表示不限制。"
+                "hint": "用逗号分隔，如：txt,pdf。留空表示不限制。"
             },
             "backup_max_size": {
-                "description": "备份单个文件大小上限(MB)",
+                "description": "备份文件大小上限（MB）",
                 "type": "int",
                 "default": 0,
+                "minimum": 0,
+                "maximum": 10240,
+                "slider": {
+                    "min": 0,
+                    "max": 10240,
+                    "step": 1
+                },
                 "hint": "0 表示不限制。"
             },
             "backup_skip_existing": {
@@ -206,18 +191,40 @@
                 "type": "bool",
                 "default": true,
                 "hint": "开启后，目标目录已有同名且大小一致的文件时不再重复上传。"
+            }
+        }
+    },
+    "auth": {
+        "type": "object",
+        "description": "配置模式",
+        "hint": "控制配置的生效范围。",
+        "items": {
+            "require_user_auth": {
+                "description": "启用用户独立配置",
+                "type": "bool",
+                "default": false,
+                "hint": "关闭：所有用户共享全局配置。开启：每个用户独立配置连接信息。"
+            }
+        }
+    },
+    "diagnostics": {
+        "type": "object",
+        "description": "诊断日志",
+        "hint": "控制传输诊断日志的输出。",
+        "items": {
+            "debug_transfer_logging": {
+                "description": "启用传输诊断日志",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后输出上传/下载进度、连接信息和 DNS 解析等详细日志。"
             },
-            "backup_retry_attempts": {
-                "description": "备份单文件尝试次数",
+            "upload_progress_step_mb": {
+                "description": "进度日志间隔（MB）",
                 "type": "int",
-                "default": 3,
-                "hint": "每个群文件备份失败时最多尝试次数，包含首次尝试。"
-            },
-            "backup_retry_delay": {
-                "description": "备份重试间隔(秒)",
-                "type": "int",
-                "default": 5,
-                "hint": "同一文件两次备份尝试之间的等待时间。"
+                "default": 64,
+                "minimum": 1,
+                "maximum": 1024,
+                "hint": "上传时每传输指定 MB 记录一条进度日志（需开启传输诊断日志）。"
             }
         }
     }

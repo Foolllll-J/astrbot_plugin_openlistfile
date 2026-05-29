@@ -20,13 +20,13 @@
 
 * 📁 **智能导航** - 序号快速导航，支持一键进入文件夹或获取文件。
 * 📥 **直接下载** - 可下载文件并直接传送给用户。
-* 🔗 **链接获取** - 可获取文件的直接下载链接，并以 txt 附件发送。
-* 📤 **文件上传** - 上传模式支持直接发送文件或图片上传。
+* 🔗 **链接获取** - 可获取文件的直接下载链接。
+* 📤 **文件上传** - 上传模式支持直接发送文件、图片、视频上传；引用消息可立即上传。
 * 🔍 **文件搜索** - 支持在指定目录中搜索目标文件。
 * 📋 **文件信息** - 查看文件详细信息（大小、修改时间等）。
 * 📦 **备份恢复** - 支持群文件备份，以及恢复文件到群。
 * 👁️ **内容预览** - 支持文本文件预览和压缩包内容查看。
-* ⚙️ **灵活设置** - 支全局设置和用户独立设置两种模式。
+* ⚙️ **灵活设置** - 支持全局设置和用户独立设置两种模式。
 * 🎨 **美化显示** - 智能文件图标，直观的信息展示。
 
 ---
@@ -45,9 +45,11 @@
 
 * 每个用户拥有独立的 OpenList 连接设置。
 * 用户设置互不干扰，支持连接不同的 OpenList 服务器。
-* **注意：此模式不保证后续维护，建议优先使用全局模式。**
 
-### 💬 用户设置（聊天界面）
+> [!CAUTION]
+> 用户独立设置模式不保证后续维护，建议优先使用全局模式。
+
+### 💬 用户设置（聊天平台）
 
 #### 快速设置向导
 
@@ -66,17 +68,11 @@
 # 设置 Openlist 服务器地址
 /ol config set openlist_url http://your-server:5244
 
-# 设置用户名（可选）
+# 设置用户名
 /ol config set username your_username
 
-# 设置密码（可选）
+# 设置密码
 /ol config set password your_password
-
-# 设置访问 Token（可选，优先级高于用户名密码）
-/ol config set token your_token
-
-# 设置上传模式持续时间（分钟，默认 10）
-/ol config set upload_mode_timeout 30
 
 # 设置普通上传单文件重试：总尝试次数 3，每次间隔 5 秒
 /ol config set upload_retry_attempts 3
@@ -90,16 +86,16 @@
 /ol config set openlist_connect_timeout 30
 /ol config set openlist_upload_response_timeout 3000
 
-# 开启上传/下载/DNS 诊断日志（默认关闭）
+# 开启上传/下载/DNS 诊断日志
 /ol config set debug_transfer_logging true
 
-# 设置允许的文件扩展名（留空表示不限制；设置后限制下载、取链接、预览和上传）
-/ol config set allowed_extensions .txt,.pdf,.mp4
+# 设置允许的文件扩展名（留空表示不限制；设置后限制下载、取链接和上传）
+/ol config set allowed_extensions txt,pdf,mp4
 
 # 设置手动备份默认目录（支持 {group_id} 占位符）
 /ol config set backup_default_path /backup/group_{group_id}
 
-# 备份时跳过目标目录内同名且大小一致的文件（默认开启）
+# 备份时跳过目标目录内同名且大小一致的文件
 /ol config set backup_skip_existing true
 
 # 设置备份单文件重试：总尝试次数 3，每次间隔 5 秒
@@ -123,14 +119,14 @@
 
 | 指令 | 中文别名 | 指令示例 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `/ol ls` | `/网盘 列表`, `/网盘 直链` | `/ol ls /` | 列出文件/获取下载链接（txt 附件） |
+| `/ol ls` | `/网盘 列表`, `/网盘 直链` | `/ol ls /` | 列出文件/获取下载链接 |
 | `/ol config` | `/网盘 配置` | `/ol config show` | 配置插件参数 |
 | `/ol next` | `/网盘 下一页` | `/ol next` | 列表翻页（下一页） |
 | `/ol prev` | `/网盘 上一页` | `/ol prev` | 列表翻页（上一页） |
 | `/ol search` | `/网盘 搜索` | `/ol search "关键词"` | 搜索文件 |
 | `/ol info` | `/网盘 信息` | `/ol info /path/file` | 查看文件/目录详细信息 |
-| `/ol download` | `/网盘 下载` | `/ol download 1` | 直接下载文件并发送 |
-| `/ol upload` | `/网盘 上传` | `/ol upload /path` | 开启/取消上传模式，可指定上传目录 |
+| `/ol dl` | `/网盘 下载` | `/ol dl 1` | 直接下载文件并发送 |
+| `/ol ul` | `/网盘 上传` | `/ol ul /path` | 开启/取消上传模式，可指定目录；引用消息直接上传 |
 | `/ol backup` | `/网盘 备份` | `/ol backup /path @群号` | 手动备份群文件 |
 | `/ol autobackup` | `/网盘 自动备份` | `/ol autobackup enable` | 配置自动备份 |
 | `/ol restore` | `/网盘 恢复` | `/ol restore /path @群号` | 从网盘恢复文件 |
@@ -161,8 +157,11 @@
 # 返回上级目录
 /ol quit
 
-# 路径方式
+# 使用绝对路径跳转到指定目录
 /ol ls /movies    # 列出 /movies 目录的内容
+
+# 使用相对路径跳转到当前目录下的子目录
+/ol ls movies     # 列出当前目录下 movies 子目录的内容
 ```
 
 ### 🔍 文件搜索与信息
@@ -170,14 +169,15 @@
 **Bash**
 
 ```
-# 搜索文件 (注意：依赖服务器索引，结果可能非最新)
+# 搜索文件 (依赖服务器索引，结果可能非最新)
 /ol search "年度报告"
 
 # 在指定目录搜索
 /ol search "年度报告" /documents
 
-# 查看文件信息 (注意：必须使用完整路径，不支持序号)
-/ol info /movies/Inception.mkv
+# 查看文件信息
+/ol info 2                       # 查看序号为2的文件或目录详情
+/ol info /movies/Inception.mkv   # 查看指定路径文件详情
 
 # 预览文件内容 (支持文本和压缩包)
 /ol preview 2                     # 预览序号为2的文件
@@ -197,30 +197,39 @@
 **Bash**
 
 ```
-# 方式一：获取下载链接（txt 附件）
-/ol ls 2                      # 如果2号是文件，获取其下载链接（txt 附件）
-/ol ls /movies/Inception.mkv  # 获取指定路径文件的下载链接（txt 附件）
+# 方式一：获取下载链接
+/ol ls 2                      # 如果2号是文件，获取其下载链接
+/ol ls /movies/Inception.mkv  # 获取指定路径文件的下载链接
 
 # 方式二：直接下载文件
-/ol download 2                      # 直接下载列表中的2号文件并作为附件发送
-/ol download /movies/Inception.mkv  # 直接下载指定路径的文件
+/ol dl 2                      # 直接下载列表中的2号文件并作为附件发送
+/ol dl /movies/Inception.mkv  # 直接下载指定路径的文件
 
-# 开始上传模式
-/ol upload
+# 开始上传模式（固定10分钟）
+/ol ul
 
-# 上传到指定目录
-/ol upload /movies
+# 上传到指定绝对路径目录
+/ol ul /movies
 
 # 上传到当前目录下的子目录
-/ol upload clips
+/ol ul clips
 
-# 在上传模式下直接发送文件或图片即可上传
+# 使用序号指定当前列表中的目录作为上传目标
+/ol ul 3
+
+# 引用消息直接上传（支持文件/图片/视频）
+引用文件消息并发送: /ol ul
+
+# 在上传模式下直接发送文件、图片或视频即可上传
 
 # 取消上传模式
-/ol upload cancel
+/ol ul cancel
 ```
 
 ### 📦 备份与恢复
+
+> [!NOTE]
+> 群文件备份、自动备份、恢复到群等能力依赖 `aiocqhttp` 协议端的群文件相关接口。
 
 **Bash**
 
@@ -253,7 +262,7 @@
 ### 📂 文件存储结构
 
 ```
-data/plugins_data/openlist/
+data/plugin_data/astrbot_plugin_openlistfile/
 ├── global_config.json          # 全局设置文件
 ├── users/                      # 用户设置目录
 │   ├── user1.json              # 用户 1 的设置
@@ -262,8 +271,15 @@ data/plugins_data/openlist/
 ├── cache/                      # 文件列表缓存目录
 │   ├── abc123.json             # 缓存文件 (MD5 命名)
 │   └── ...
-└── downloads/                  # 临时下载目录
-    ├── user123_1234567890_file.txt # 临时下载文件
+└── backup_retry/               # 备份重试状态目录
+    └── group_xxx_user_xxx.json # 重试状态
+
+data/temp/astrbot_plugin_openlistfile/
+├── downloads/                  # 临时下载文件（自动清理）
+│   ├── user123_1234567890_file.txt
+│   └── ...
+└── preview/                    # 预览临时文件（自动清理）
+    ├── preview_1234567890_file.txt
     └── ...
 ```
 

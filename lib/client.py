@@ -1,6 +1,6 @@
-import os
 import asyncio
 import posixpath
+from pathlib import Path
 import socket
 import time
 import aiohttp
@@ -25,9 +25,9 @@ class ProgressFilePayload(aiohttp.Payload):
 
     def __init__(self, file_path: str, filename: str, chunk_size: int, progress_step: int, debug_logging: bool = False):
         super().__init__(None, content_type="application/octet-stream")
-        self.file_path = file_path
+        self.file_path = Path(file_path)
         self._filename = filename
-        self.file_size = os.path.getsize(file_path)
+        self.file_size = self.file_path.stat().st_size
         self.chunk_size = chunk_size
         self.progress_step = progress_step
         self.debug_logging = debug_logging
@@ -49,7 +49,7 @@ class ProgressFilePayload(aiohttp.Payload):
             local_addr = transport.get_extra_info("sockname")
             peer_addr = transport.get_extra_info("peername")
             ssl_object = transport.get_extra_info("ssl_object")
-            logger.info(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
+            logger.debug(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
             self._transport_logged = True
         with open(self.file_path, "rb") as f:
             while True:
@@ -66,14 +66,14 @@ class ProgressFilePayload(aiohttp.Payload):
                     elapsed = max(time.monotonic() - started_at, 0.001)
                     speed = uploaded / 1024 / 1024 / elapsed
                     buffer_size = transport.get_write_buffer_size() if transport else None
-                    logger.info(
+                    logger.debug(
                         f"上传进度: {self._filename} {uploaded}/{self.file_size} bytes 已写入连接 "
                         f"speed={speed:.2f}MB/s write_buffer={buffer_size}"
                     )
                     last_logged = uploaded
         elapsed = max(time.monotonic() - started_at, 0.001)
         if self.debug_logging:
-            logger.info(
+            logger.debug(
                 f"上传请求体写入完成: {self._filename} {uploaded}/{self.file_size} bytes "
                 f"elapsed={elapsed:.2f}s avg_speed={uploaded / 1024 / 1024 / elapsed:.2f}MB/s"
             )
@@ -108,7 +108,7 @@ class ProgressStreamPayload(aiohttp.Payload):
             local_addr = transport.get_extra_info("sockname")
             peer_addr = transport.get_extra_info("peername")
             ssl_object = transport.get_extra_info("ssl_object")
-            logger.info(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
+            logger.debug(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
             self._transport_logged = True
 
         async for chunk in self.stream:
@@ -125,7 +125,7 @@ class ProgressStreamPayload(aiohttp.Payload):
                 speed = uploaded / 1024 / 1024 / elapsed
                 buffer_size = transport.get_write_buffer_size() if transport else None
                 total = self.file_size if self.file_size is not None else "unknown"
-                logger.info(
+                logger.debug(
                     f"上传进度: {self._filename} {uploaded}/{total} bytes 已写入连接 "
                     f"speed={speed:.2f}MB/s write_buffer={buffer_size}"
                 )
@@ -134,7 +134,7 @@ class ProgressStreamPayload(aiohttp.Payload):
         elapsed = max(time.monotonic() - started_at, 0.001)
         total = self.file_size if self.file_size is not None else "unknown"
         if self.debug_logging:
-            logger.info(
+            logger.debug(
                 f"上传请求体写入完成: {self._filename} {uploaded}/{total} bytes "
                 f"elapsed={elapsed:.2f}s avg_speed={uploaded / 1024 / 1024 / elapsed:.2f}MB/s"
             )
@@ -149,7 +149,6 @@ class OpenlistClient:
         public_base_url: str = "",
         username: str = "",
         password: str = "",
-        token: str = "",
         fixed_base_directory: str = "",
         transfer_config: Optional[Dict] = None,
     ):
@@ -157,7 +156,7 @@ class OpenlistClient:
         self.public_base_url = public_base_url.rstrip("/") if public_base_url else ""
         self.username = username
         self.password = password
-        self.token = token
+        self.token = ""
         self.fixed_base_directory = fixed_base_directory
         self.transfer_config = self._build_transfer_config(transfer_config)
         self.session = None
@@ -380,14 +379,28 @@ class OpenlistClient:
         """通过认证 API 获取真实下载链接，供机器人后台下载使用。"""
         raw_path = self._with_fixed_base_directory(path)
 
+        def is_admin_only_reason(reason: str) -> bool:
+            reason_lower = (reason or "").strip().lower()
+            return "not an admin" in reason_lower or "you are not an admin" in reason_lower
+
         async def fallback_to_raw_url(reason: str) -> Optional[Dict]:
-            logger.warning(
-                f"获取真实下载链接失败，尝试 raw_url 兜底: {reason}, "
-                f"路径: {path}, raw_path: {raw_path}"
-            )
             file_info = await self.get_file_info(path)
             if file_info and not file_info.get("is_dir", True) and file_info.get("raw_url"):
+                if is_admin_only_reason(reason):
+                    logger.debug(
+                        f"获取真实下载链接失败，已改用 raw_url 兜底: {reason}, "
+                        f"路径: {path}, raw_path: {raw_path}"
+                    )
+                else:
+                    logger.warning(
+                        f"获取真实下载链接失败，尝试 raw_url 兜底: {reason}, "
+                        f"路径: {path}, raw_path: {raw_path}"
+                    )
                 return {"url": file_info["raw_url"], "header": {}}
+            logger.error(
+                f"获取真实下载链接失败，raw_url 兜底也失败: {reason}, "
+                f"路径: {path}, raw_path: {raw_path}"
+            )
             return None
 
         try:
@@ -405,17 +418,15 @@ class OpenlistClient:
                         data = result.get("data") or {}
                         if data.get("url"):
                             return data
-                        logger.error(f"获取真实下载链接失败 - 响应缺少 url: {result}, 路径: {path}, raw_path: {raw_path}")
                         return await fallback_to_raw_url("响应缺少 url")
-                    logger.error(
-                        f"获取真实下载链接失败 - code: {result.get('code')}, "
-                        f"message: {result.get('message', '未知错误')}, 路径: {path}, raw_path: {raw_path}"
+                    reason = (
+                        f"code={result.get('code')}, "
+                        f"message={result.get('message', '未知错误')}"
                     )
-                    return await fallback_to_raw_url(result.get("message", "接口返回错误"))
+                    return await fallback_to_raw_url(reason)
 
                 error_text = await resp.text()
-                logger.error(f"获取真实下载链接失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}, raw_path: {raw_path}")
-                return await fallback_to_raw_url(f"HTTP {resp.status}")
+                return await fallback_to_raw_url(f"HTTP {resp.status}, 响应: {error_text}")
         except Exception as e:
             logger.error(f"获取真实下载链接失败: {e}, 路径: {path}, raw_path: {raw_path}", exc_info=True)
             return await fallback_to_raw_url(str(e))
@@ -425,15 +436,16 @@ class OpenlistClient:
     ) -> bool:
         """上传文件到Openlist"""
         try:
-            if not os.path.exists(file_path):
+            local_path = Path(file_path)
+            if not local_path.exists():
                 logger.error(f"文件不存在: {file_path}")
                 return False
 
             if filename is None:
-                filename = os.path.basename(file_path)
+                filename = local_path.name
 
-            file_size = os.path.getsize(file_path)
-            logger.info(f"开始流式上传文件: {filename}, 大小: {file_size} bytes, 目标: {target_path}")
+            file_size = local_path.stat().st_size
+            logger.debug(f"开始流式上传文件: {filename}, 大小: {file_size} bytes, 目标: {target_path}")
             payload = ProgressFilePayload(
                 file_path,
                 filename,
@@ -456,7 +468,7 @@ class OpenlistClient:
         source_port = parsed_source.port or (443 if parsed_source.scheme == "https" else 80)
 
         try:
-            logger.info(
+            logger.debug(
                 f"开始 URL 流式中转上传: {filename}, source={source_host}:{source_port}, "
                 f"expected_size={file_size}, 目标: {target_path}"
             )
@@ -466,9 +478,9 @@ class OpenlistClient:
                         source_host, source_port, type=socket.SOCK_STREAM
                     )
                     resolved = sorted({f"{item[4][0]}:{item[4][1]}" for item in addrinfo})
-                    logger.info(f"上游文件目标解析: {source_host}:{source_port} -> {', '.join(resolved)}")
+                    logger.debug(f"上游文件目标解析: {source_host}:{source_port} -> {', '.join(resolved)}")
                 except Exception as e:
-                    logger.warning(f"解析上游文件目标失败: {source_host}:{source_port}, err={e}")
+                    logger.debug(f"解析上游文件目标失败: {source_host}:{source_port}, err={e}")
 
             timeout = aiohttp.ClientTimeout(
                 total=None,
@@ -479,7 +491,7 @@ class OpenlistClient:
                 content_length = source_response.headers.get("Content-Length")
                 content_type = source_response.headers.get("Content-Type")
                 if self.transfer_config["debug_transfer_logging"]:
-                    logger.info(
+                    logger.debug(
                         f"上游文件响应: HTTP {source_response.status}, source={source_host}, "
                         f"content_length={content_length}, content_type={content_type}"
                     )
@@ -538,7 +550,7 @@ class OpenlistClient:
             headers["Authorization"] = self.token
 
         if self.transfer_config["debug_transfer_logging"]:
-            logger.info(
+            logger.debug(
                 f"OpenList 上传参数: url={upload_url}, source={source_desc}, "
                 f"content_length={payload.size}, file_path_header={encoded_file_path}, "
                 f"auth={'yes' if headers.get('Authorization') else 'no'}"
@@ -550,7 +562,7 @@ class OpenlistClient:
             sock_read=self.transfer_config["openlist_upload_response_timeout"],
         )
         if self.transfer_config["debug_transfer_logging"]:
-            logger.info(f"发起 OpenList PUT 上传请求: {upload_url}")
+            logger.debug(f"发起 OpenList PUT 上传请求: {upload_url}")
         parsed_url = urlparse(upload_url)
         host = parsed_url.hostname
         port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
@@ -560,9 +572,9 @@ class OpenlistClient:
                     host, port, type=socket.SOCK_STREAM
                 )
                 resolved = sorted({f"{item[4][0]}:{item[4][1]}" for item in addrinfo})
-                logger.info(f"OpenList 上传目标解析: {host}:{port} -> {', '.join(resolved)}")
+                logger.debug(f"OpenList 上传目标解析: {host}:{port} -> {', '.join(resolved)}")
             except Exception as e:
-                logger.warning(f"解析 OpenList 上传目标失败: {host}:{port}, err={e}")
+                logger.debug(f"解析 OpenList 上传目标失败: {host}:{port}, err={e}")
 
         try:
             request_started_at = time.monotonic()
@@ -570,14 +582,13 @@ class OpenlistClient:
                 upload_url, data=payload, headers=headers, timeout=timeout
             ) as response:
                 request_elapsed = time.monotonic() - request_started_at
-                logger.info(
+                logger.debug(
                     f"OpenList 上传响应: HTTP {response.status}, 文件: {filename}, "
                     f"elapsed={request_elapsed:.2f}s"
                 )
                 if response.status == 200:
                     result = await response.json()
                     if result.get("code") == 200:
-                        logger.info(f"流式上传完成: {filename} -> {target_path}")
                         return True
                     logger.error(
                         f"上传失败，服务器返回错误 - code: {result.get('code')}, "
