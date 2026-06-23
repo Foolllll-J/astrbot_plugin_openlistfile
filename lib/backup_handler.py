@@ -10,6 +10,36 @@ from astrbot.api.message_components import File
 from .helpers import new_lru_mapping, remember_lru_entry
 
 
+async def _upload_group_file_via_local_file(
+    client,
+    file_component: File,
+    file_name: str,
+    target_path: str,
+    max_size_mb: int,
+) -> tuple[bool, Optional[Path]]:
+    get_file_started_at = time.monotonic()
+    file_path = await file_component.get_file()
+    logger.debug(
+        f"📥 [自动备份] 本地获取完成: {file_name}, path={file_path}, "
+        f"elapsed={time.monotonic() - get_file_started_at:.2f}s"
+    )
+
+    file_path_obj = Path(file_path) if file_path else None
+    if not file_path_obj or not file_path_obj.exists():
+        logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
+        return False, file_path_obj
+
+    actual_size = file_path_obj.stat().st_size
+    if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
+        logger.debug(
+            f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。"
+        )
+        return False, file_path_obj
+
+    success = await client.upload_file(str(file_path_obj), target_path, file_name)
+    return success, file_path_obj
+
+
 async def run_group_file_autobackup(
     plugin,
     event: AstrMessageEvent,
@@ -24,11 +54,7 @@ async def run_group_file_autobackup(
     busid: int = 0,
 ) -> None:
     """后台执行群文件自动备份，避免阻塞同一条消息上的其他处理器。"""
-    if event.platform_meta.name != "aiocqhttp":
-        logger.warning(f"平台 {event.platform_meta.name} 不支持群文件操作，跳过自动备份。")
-        return
     async with plugin.autobackup_semaphore:
-        file_path = None
         file_path_obj = None
         try:
             max_size_mb = plugin._get_size_limit_mb(user_config, "backup_max_size", 0)
@@ -36,7 +62,7 @@ async def run_group_file_autobackup(
                 logger.debug(f"⏭️ [自动备份] 文件 {file_name} 事件大小 {file_size} 超过限制 {max_size_mb}MB，跳过。")
                 return
 
-            logger.debug(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
+            logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
             async with plugin._create_openlist_client(user_config) as client:
                 if not await client.ensure_dir(target_path):
                     logger.error(f"❌ [自动备份] 创建目标目录失败: {target_path}")
@@ -56,7 +82,14 @@ async def run_group_file_autobackup(
                             if expected_size is None or existing_size == expected_size:
                                 logger.debug(f"⏭️ [自动备份] 跳过已存在文件: {target_path}/{file_name}")
                                 return
-                if (file_url or file_id) and file_size is not None:
+
+                success = False
+                use_url_transfer = (
+                    event.platform_meta.name == "aiocqhttp"
+                    and (file_url or file_id)
+                    and file_size is not None
+                )
+                if use_url_transfer:
                     item = {
                         "file_id": file_id,
                         "file_name": file_name,
@@ -66,7 +99,7 @@ async def run_group_file_autobackup(
                     retry_attempts = plugin._get_positive_int_config(user_config, "backup_retry_attempts", 3)
                     retry_delay = plugin._get_positive_int_config(user_config, "backup_retry_delay", 5, minimum=0)
                     if file_id:
-                        success, _ = await upload_group_file_with_retry(
+                        success, reason = await upload_group_file_with_retry(
                             plugin,
                             event.bot,
                             client,
@@ -80,25 +113,25 @@ async def run_group_file_autobackup(
                     else:
                         logger.debug(f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}")
                         success = await client.upload_url_stream(file_url, target_path, file_name, file_size)
+                        reason = "URL 流式中转上传失败"
+
+                    if not success:
+                        logger.warning(f"⚠️ [自动备份] URL 上传失败，回退本地文件上传: {file_name}, reason={reason}")
+                        success, file_path_obj = await _upload_group_file_via_local_file(
+                            client,
+                            file_component,
+                            file_name,
+                            target_path,
+                            max_size_mb,
+                        )
                 else:
-                    get_file_started_at = time.monotonic()
-                    file_path = await file_component.get_file()
-                    logger.debug(
-                        f"📥 [自动备份] 本地获取完成: {file_name}, path={file_path}, "
-                        f"elapsed={time.monotonic() - get_file_started_at:.2f}s"
+                    success, file_path_obj = await _upload_group_file_via_local_file(
+                        client,
+                        file_component,
+                        file_name,
+                        target_path,
+                        max_size_mb,
                     )
-
-                    file_path_obj = Path(file_path) if file_path else None
-                    if not file_path_obj or not file_path_obj.exists():
-                        logger.error(f"❌ [自动备份] 无法获取文件路径: {file_name}")
-                        return
-
-                    actual_size = file_path_obj.stat().st_size
-                    if max_size_mb > 0 and actual_size > (max_size_mb * 1024 * 1024):
-                        logger.debug(f"⏭️ [自动备份] 文件 {file_name} 实际下载大小 {actual_size} 超过限制 {max_size_mb}MB，跳过。")
-                        return
-
-                    success = await client.upload_file(file_path, target_path, file_name)
 
                 if success:
                     logger.info(f"✅ [自动备份] 文件 {file_name} 上传成功。")
@@ -130,7 +163,11 @@ async def handle_group_file_upload(plugin, event: AstrMessageEvent):
             file_size = data_dict.get("file_size")
             file_url = data_dict.get("url")
 
-            if not file_name or not file_id:
+            if not file_name:
+                continue
+
+            is_qq_platform = event.platform_meta.name == "aiocqhttp"
+            if is_qq_platform and not file_id:
                 continue
 
             if isinstance(file_size, str):
@@ -156,7 +193,7 @@ async def handle_group_file_upload(plugin, event: AstrMessageEvent):
             if file_size is not None:
                 max_size_mb = plugin._get_size_limit_mb(user_config, "backup_max_size", 0)
                 if max_size_mb > 0 and file_size > (max_size_mb * 1024 * 1024):
-                    logger.debug(f"⏭️ [自动备份] 文件 {file_name} 超过限制 {max_size_mb}MB (事件报送大小: {file_size})，跳过。")
+                    logger.debug(f"⏭️ [自动备份] 文件 {file_name} 超过限制 {max_size_mb}MB (事件报告大小 {file_size})，跳过。")
                     return
 
             file_component = None
@@ -190,7 +227,6 @@ async def handle_group_file_upload(plugin, event: AstrMessageEvent):
                     busid=data_dict.get("busid", 0),
                 )
             )
-            logger.debug(f"🧵 [自动备份] 已转入后台任务: group={group_id}, file={file_name}")
             break
 
 
@@ -556,7 +592,7 @@ async def do_backup_logic(
 
 
 async def handle_backup_command(plugin, event: AstrMessageEvent, arg1: str = None, arg2: str = None):
-    """群文件备份到 Openlist"""
+    """备份群文件到 Openlist"""
     if event.platform_meta.name != "aiocqhttp":
         yield event.plain_result("❌ 备份功能仅支持 aiocqhttp 协议端（NapCat/LLOneBot 等）。")
         return
@@ -675,9 +711,6 @@ async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str
     groups = local_cfg.get("autobackup_groups", [])
 
     if action == "enable":
-        if event.platform_meta.name != "aiocqhttp":
-            yield event.plain_result("❌ 自动备份仅支持 aiocqhttp 协议端（NapCat/LLOneBot 等）。")
-            return
         target_path = plugin._render_backup_path(
             target_path or global_cfg.get("backup_default_path", "/backup/group_{group_id}"),
             target_gid,
@@ -692,18 +725,21 @@ async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str
             f"✅ 群 {target_gid} 自动备份已开启 -> {target_path}\n"
             f"📦 正在执行首次全量备份..."
         )
-        backup_config = plugin.get_global_config()
-        async for result in do_backup_logic(
-            plugin,
-            event.bot,
-            event,
-            int(target_gid),
-            target_path,
-            backup_config,
-            is_auto=False,
-            retry_key=plugin._get_backup_retry_key(event),
-        ):
-            yield result
+        if event.platform_meta.name == "aiocqhttp":
+            backup_config = plugin.get_global_config()
+            async for result in do_backup_logic(
+                plugin,
+                event.bot,
+                event,
+                int(target_gid),
+                target_path,
+                backup_config,
+                is_auto=False,
+                retry_key=plugin._get_backup_retry_key(event),
+            ):
+                yield result
+        else:
+            yield event.plain_result("💡 当前平台不支持全量群文件扫描，已仅开启后续自动备份。")
 
     elif action == "disable":
         new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]

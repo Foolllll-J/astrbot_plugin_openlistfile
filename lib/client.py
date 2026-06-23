@@ -468,10 +468,6 @@ class OpenlistClient:
         source_port = parsed_source.port or (443 if parsed_source.scheme == "https" else 80)
 
         try:
-            logger.debug(
-                f"开始 URL 流式中转上传: {filename}, source={source_host}:{source_port}, "
-                f"expected_size={file_size}, 目标: {target_path}"
-            )
             if self.transfer_config["debug_transfer_logging"] and source_host != "unknown":
                 try:
                     addrinfo = await asyncio.get_running_loop().getaddrinfo(
