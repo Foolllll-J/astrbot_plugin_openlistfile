@@ -496,7 +496,7 @@ async def handle_search_files(plugin, event, keyword: str, path: str = "/"):
                 yield event.plain_result(f"🔍 未找到包含 '{keyword}' 的文件")
                 return
 
-            search_title = f'🔳 搜索 "{keyword}"'
+            search_title = f'🔍 搜索 "{keyword}"'
             plugin._update_user_navigation_state(user_id, search_title, files)
             yield event.plain_result(
                 plugin._format_file_list(files, search_title, user_config, user_id)
