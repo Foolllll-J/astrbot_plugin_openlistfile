@@ -83,9 +83,13 @@ class OpenlistPlugin(PluginRuntimeMixin, Star):
         """处理群文件上传事件。"""
         await backup_handler.handle_group_file_upload(self, event)
 
-    async def _upload_file(self, event: AstrMessageEvent, file_component: File, user_config: Dict):
+    async def _upload_file(
+        self, event: AstrMessageEvent, file_component: File, user_config: Dict
+    ):
         """上传普通文件到 OpenList。"""
-        async for result in upload_handler.upload_file(self, event, file_component, user_config):
+        async for result in upload_handler.upload_file(
+            self, event, file_component, user_config
+        ):
             yield result
 
     async def _get_group_files_recursive(
@@ -169,14 +173,22 @@ class OpenlistPlugin(PluginRuntimeMixin, Star):
         ):
             yield result
 
-    async def _upload_image(self, event: AstrMessageEvent, image_component: Image, user_config: Dict):
+    async def _upload_image(
+        self, event: AstrMessageEvent, image_component: Image, user_config: Dict
+    ):
         """上传图片到 OpenList。"""
-        async for result in upload_handler.upload_image(self, event, image_component, user_config):
+        async for result in upload_handler.upload_image(
+            self, event, image_component, user_config
+        ):
             yield result
 
-    async def _upload_video(self, event: AstrMessageEvent, video_component: Video, user_config: Dict):
+    async def _upload_video(
+        self, event: AstrMessageEvent, video_component: Video, user_config: Dict
+    ):
         """上传视频到 OpenList。"""
-        async for result in upload_handler.upload_video(self, event, video_component, user_config):
+        async for result in upload_handler.upload_video(
+            self, event, video_component, user_config
+        ):
             yield result
 
     @filter.command_group("ol", alias=["网盘"])
@@ -193,7 +205,9 @@ class OpenlistPlugin(PluginRuntimeMixin, Star):
         value: str = "",
     ):
         """配置 OpenList 连接和插件参数。"""
-        async for result in command_handler.handle_config_command(self, event, action, key, value):
+        async for result in command_handler.handle_config_command(
+            self, event, action, key, value
+        ):
             yield result
 
     @openlist_group.command("ls", alias=["列表", "直链"])
@@ -215,9 +229,13 @@ class OpenlistPlugin(PluginRuntimeMixin, Star):
             yield result
 
     @openlist_group.command("search", alias=["搜索"])
-    async def search_files(self, event: AstrMessageEvent, keyword: str, path: str = "/"):
+    async def search_files(
+        self, event: AstrMessageEvent, keyword: str, path: str = "/"
+    ):
         """搜索文件。"""
-        async for result in command_handler.handle_search_files(self, event, keyword, path):
+        async for result in command_handler.handle_search_files(
+            self, event, keyword, path
+        ):
             yield result
 
     @openlist_group.command("info", alias=["信息"])
@@ -251,9 +269,13 @@ class OpenlistPlugin(PluginRuntimeMixin, Star):
             yield result
 
     @openlist_group.command("backup", alias=["备份"])
-    async def backup_command(self, event: AstrMessageEvent, arg1: str = None, arg2: str = None):
+    async def backup_command(
+        self, event: AstrMessageEvent, arg1: str = None, arg2: str = None
+    ):
         """备份群文件到 OpenList。"""
-        async for result in backup_handler.handle_backup_command(self, event, arg1, arg2):
+        async for result in backup_handler.handle_backup_command(
+            self, event, arg1, arg2
+        ):
             yield result
 
     @openlist_group.command("autobackup", alias=["自动备份"])
@@ -271,9 +293,13 @@ class OpenlistPlugin(PluginRuntimeMixin, Star):
             yield result
 
     @openlist_group.command("restore", alias=["恢复"])
-    async def restore_command(self, event: AstrMessageEvent, path: str, target: str = None):
+    async def restore_command(
+        self, event: AstrMessageEvent, path: str, target: str = None
+    ):
         """把 OpenList 中的文件恢复到会话中。"""
-        async for result in download_handler.handle_restore_command(self, event, path, target):
+        async for result in download_handler.handle_restore_command(
+            self, event, path, target
+        ):
             yield result
 
     @openlist_group.command("preview", alias=["预览"])

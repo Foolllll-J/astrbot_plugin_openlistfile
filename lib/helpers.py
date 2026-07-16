@@ -6,10 +6,40 @@ from pathlib import Path
 from typing import MutableMapping, Optional, Tuple
 
 TEXT_PREVIEW_EXTENSIONS = {
-    ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".conf",
-    ".cfg", ".toml", ".py", ".js", ".java", ".c", ".cpp", ".h", ".go", ".rs",
-    ".php", ".rb", ".sh", ".bash", ".html", ".htm", ".css", ".jsx", ".tsx",
-    ".ts", ".vue", ".sql", ".csv", ".properties", ".env",
+    ".txt",
+    ".md",
+    ".log",
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".ini",
+    ".conf",
+    ".cfg",
+    ".toml",
+    ".py",
+    ".js",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".go",
+    ".rs",
+    ".php",
+    ".rb",
+    ".sh",
+    ".bash",
+    ".html",
+    ".htm",
+    ".css",
+    ".jsx",
+    ".tsx",
+    ".ts",
+    ".vue",
+    ".sql",
+    ".csv",
+    ".properties",
+    ".env",
 }
 
 
@@ -73,7 +103,9 @@ def should_download_for_text_preview(file_name: str) -> bool:
     return Path(file_name or "").suffix.lower() in TEXT_PREVIEW_EXTENSIONS
 
 
-def copy_file_to_temp(source_path: str, temp_dir: str, filename: str, prefix: str = "") -> str:
+def copy_file_to_temp(
+    source_path: str, temp_dir: str, filename: str, prefix: str = ""
+) -> str:
     Path(temp_dir).mkdir(parents=True, exist_ok=True)
     source = Path(source_path)
     target_name = f"{prefix}{int(time.time() * 1000)}_{Path(filename).name}"

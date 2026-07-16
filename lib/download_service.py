@@ -19,7 +19,9 @@ def normalize_download_headers(headers: Dict) -> Dict[str, str]:
             values = [str(v) for v in value if v is not None]
             if not values:
                 continue
-            normalized[key] = "; ".join(values) if key.lower() == "cookie" else ",".join(values)
+            normalized[key] = (
+                "; ".join(values) if key.lower() == "cookie" else ",".join(values)
+            )
         else:
             normalized[key] = str(value)
     return normalized
@@ -33,7 +35,9 @@ def parse_link_content_length(link: Dict) -> int:
         return 0
 
 
-def build_temp_file_path(base_dir: str, prefix: str, unique_suffix: str, safe_filename: str) -> str:
+def build_temp_file_path(
+    base_dir: str, prefix: str, unique_suffix: str, safe_filename: str
+) -> str:
     return str(Path(base_dir) / f"{prefix}_{unique_suffix}_{safe_filename}")
 
 
@@ -41,9 +45,11 @@ def build_plugin_temp_dir(base_dir: str, purpose: str) -> str:
     return str(Path(base_dir) / "astrbot_plugin_openlistfile" / purpose)
 
 
-def build_download_link_text(file_name: str, file_size_text: str, file_path: str, download_url: str) -> str:
+def build_download_link_text(
+    file_name: str, file_size_text: str, file_path: str, download_url: str
+) -> str:
     return (
-        "OpenList 下载链接\n\n"
+        "OpenList 下载链接\n\u200b\n"
         f"文件: {file_name}\n"
         f"路径: {file_path}\n"
         f"大小: {file_size_text}\n"
@@ -51,7 +57,9 @@ def build_download_link_text(file_name: str, file_size_text: str, file_path: str
     )
 
 
-def decode_text_preview(content_bytes: bytes, text_length: int, detector: Callable = None) -> Dict[str, str]:
+def decode_text_preview(
+    content_bytes: bytes, text_length: int, detector: Callable = None
+) -> Dict[str, str]:
     detector = detector or chardet.detect
     detection = detector(content_bytes)
     encoding = detection.get("encoding", "utf-8") or "utf-8"
@@ -65,7 +73,7 @@ def decode_text_preview(content_bytes: bytes, text_length: int, detector: Callab
 
     preview_text = decoded_text[:text_length]
     if len(decoded_text) > text_length:
-        preview_text += "\n\n..."
+        preview_text += "\n\u200b\n..."
     return {
         "encoding": encoding,
         "confidence": confidence,
@@ -107,13 +115,19 @@ def extract_epub_preview_text(epub_path: str, max_chars: int = 1000) -> str:
                 idref = itemref.attrib.get("idref")
                 if idref in manifest:
                     href = manifest[idref]
-                    full_href = Path(opf_dir, href).as_posix() if opf_dir not in ("", ".") else href
+                    full_href = (
+                        Path(opf_dir, href).as_posix()
+                        if opf_dir not in ("", ".")
+                        else href
+                    )
                     spine_items.append(full_href)
 
             if not spine_items:
                 return "错误：EPUB 内容为空或无法解析阅读顺序。"
 
-            re_scripts = re.compile(r"<(script|style).*?>.*?</\1>", re.DOTALL | re.IGNORECASE)
+            re_scripts = re.compile(
+                r"<(script|style).*?>.*?</\1>", re.DOTALL | re.IGNORECASE
+            )
             re_block_tags = re.compile(
                 r"<(p|div|br|li|h[1-6]|tr|blockquote|section|article).*?>",
                 re.IGNORECASE,
@@ -129,7 +143,9 @@ def extract_epub_preview_text(epub_path: str, max_chars: int = 1000) -> str:
                 if current_len >= max_chars * 2:
                     break
                 try:
-                    html_content = archive.read(item_path).decode("utf-8", errors="ignore")
+                    html_content = archive.read(item_path).decode(
+                        "utf-8", errors="ignore"
+                    )
                 except Exception:
                     continue
 
@@ -140,7 +156,7 @@ def extract_epub_preview_text(epub_path: str, max_chars: int = 1000) -> str:
                 text = unescape(text)
                 text = re_spaces.sub(" ", text)
                 lines = [line.strip() for line in text.split("\n") if line.strip()]
-                text = re_newlines.sub("\n\n", "\n".join(lines)).strip()
+                text = re_newlines.sub("\n\u200b\n", "\n".join(lines)).strip()
                 if not text:
                     continue
 
@@ -150,9 +166,9 @@ def extract_epub_preview_text(epub_path: str, max_chars: int = 1000) -> str:
             if not full_text:
                 return "错误：EPUB 中未提取到可预览文本。"
 
-            preview_text = "\n\n".join(full_text)[:max_chars]
+            preview_text = "\n\u200b\n".join(full_text)[:max_chars]
             if sum(len(chunk) for chunk in full_text) > max_chars:
-                preview_text += "\n\n..."
+                preview_text += "\n\u200b\n..."
             return preview_text
     except Exception as exc:
         return f"错误：EPUB 解析失败：{exc}"

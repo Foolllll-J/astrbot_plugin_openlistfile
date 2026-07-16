@@ -5,6 +5,7 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 from astrbot.core.utils.io import ensure_dir
 
+
 class UserConfigManager:
     """用户配置管理器 - 每个用户独立配置"""
 
@@ -108,7 +109,7 @@ class GlobalConfigManager:
             "openlist_upload_response_timeout": 3000,
             "debug_transfer_logging": False,
             "backup_default_path": "/backup/group_{group_id}",
-            "autobackup_groups": [], # 启用自动备份的群号列表
+            "autobackup_groups": [],  # 启用自动备份的群号列表
             "backup_allowed_extensions": "",
             "backup_max_size": 0,
             "backup_skip_existing": True,

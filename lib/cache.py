@@ -7,6 +7,7 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 from astrbot.core.utils.io import ensure_dir
 
+
 class CacheManager:
     """文件缓存管理器"""
 

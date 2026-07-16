@@ -37,7 +37,6 @@ from .upload_service import (
     extract_quoted_upload_components,
     get_upload_state_key,
     get_user_upload_state,
-    is_regular_message_event,
     set_user_upload_waiting,
 )
 
@@ -97,7 +96,9 @@ class PluginRuntimeMixin:
             if isinstance(webui_val, list) and local_key == "autobackup_groups":
                 local_val = config.get(local_key, [])
                 combined = list(local_val)
-                existing_gids = {item.split(":", 1)[0] for item in local_val if ":" in item}
+                existing_gids = {
+                    item.split(":", 1)[0] for item in local_val if ":" in item
+                }
                 existing_gids.update({item for item in local_val if ":" not in item})
                 for item in webui_val:
                     gid = item.split(":", 1)[0] if ":" in item else item
@@ -115,15 +116,18 @@ class PluginRuntimeMixin:
             "default_openlist_url": "openlist_url",
             "default_username": "username",
             "default_password": "password",
-
         }.items():
             if not config.get(local_key) and config.get(legacy_key):
                 config[local_key] = config[legacy_key]
 
         for key in ["allowed_extensions", "backup_allowed_extensions"]:
             if isinstance(config.get(key), str):
-                values = [ext.strip().lower() for ext in config[key].split(",") if ext.strip()]
-                config[key] = [ext if ext.startswith(".") else f".{ext}" for ext in values]
+                values = [
+                    ext.strip().lower() for ext in config[key].split(",") if ext.strip()
+                ]
+                config[key] = [
+                    ext if ext.startswith(".") else f".{ext}" for ext in values
+                ]
 
         return config
 
@@ -147,9 +151,13 @@ class PluginRuntimeMixin:
         minimum: int = 1,
     ) -> int:
         """读取正整数配置。"""
-        return get_positive_int_config(user_config, key, default, minimum=minimum, logger=logger)
+        return get_positive_int_config(
+            user_config, key, default, minimum=minimum, logger=logger
+        )
 
-    def _get_bool_config(self, user_config: Dict, key: str, default: bool = False) -> bool:
+    def _get_bool_config(
+        self, user_config: Dict, key: str, default: bool = False
+    ) -> bool:
         """读取布尔配置。"""
         return get_bool_config(user_config, key, default)
 
@@ -184,7 +192,9 @@ class PluginRuntimeMixin:
     ) -> bool:
         """本地文件上传失败时重试。"""
         attempts, retry_delay = self._get_retry_config(user_config, "upload")
-        debug_transfer_logging = self._get_bool_config(user_config, "debug_transfer_logging", False)
+        debug_transfer_logging = self._get_bool_config(
+            user_config, "debug_transfer_logging", False
+        )
         for attempt in range(1, attempts + 1):
             if await client.upload_file(file_path, target_path, file_name):
                 return True
@@ -206,7 +216,9 @@ class PluginRuntimeMixin:
     ) -> bool:
         """URL 流式上传失败时重试，并支持刷新源链接。"""
         attempts, retry_delay = self._get_retry_config(user_config, "upload")
-        debug_transfer_logging = self._get_bool_config(user_config, "debug_transfer_logging", False)
+        debug_transfer_logging = self._get_bool_config(
+            user_config, "debug_transfer_logging", False
+        )
         current_url = source_url
         for attempt in range(1, attempts + 1):
             if attempt > 1 and callable(refresh_url):
@@ -216,7 +228,13 @@ class PluginRuntimeMixin:
                         current_url = refreshed_url
                 except Exception as e:
                     if debug_transfer_logging:
-                        logger.debug("刷新上传链接失败: %s (%s/%s): %s", file_name, attempt, attempts, e)
+                        logger.debug(
+                            "刷新上传链接失败: %s (%s/%s): %s",
+                            file_name,
+                            attempt,
+                            attempts,
+                            e,
+                        )
 
             if current_url and await client.upload_url_stream(
                 current_url, target_path, file_name, file_size
@@ -228,7 +246,9 @@ class PluginRuntimeMixin:
                 await asyncio.sleep(retry_delay)
         return False
 
-    def _get_extension_filter(self, user_config: Dict, key: str = "allowed_extensions") -> List[str]:
+    def _get_extension_filter(
+        self, user_config: Dict, key: str = "allowed_extensions"
+    ) -> List[str]:
         """读取扩展名过滤配置。"""
         return get_extension_filter(user_config, key)
 
@@ -241,7 +261,9 @@ class PluginRuntimeMixin:
         """判断文件扩展名是否允许。"""
         return is_extension_allowed(filename, user_config, key)
 
-    def _format_extension_filter(self, user_config: Dict, key: str = "allowed_extensions") -> str:
+    def _format_extension_filter(
+        self, user_config: Dict, key: str = "allowed_extensions"
+    ) -> str:
         """格式化扩展名过滤信息。"""
         return format_extension_filter(user_config, key)
 
@@ -355,7 +377,9 @@ class PluginRuntimeMixin:
     def get_user_config_manager(self, user_id: str) -> UserConfigManager:
         """获取用户配置管理器。"""
         if user_id not in self.user_config_managers:
-            self.user_config_managers[user_id] = UserConfigManager("astrbot_plugin_openlistfile", user_id)
+            self.user_config_managers[user_id] = UserConfigManager(
+                "astrbot_plugin_openlistfile", user_id
+            )
         return self.user_config_managers[user_id]
 
     def get_user_config(self, user_id: str) -> Dict:
@@ -371,12 +395,18 @@ class PluginRuntimeMixin:
             is_default_value = value == default_val
             if key == "allowed_extensions":
                 if isinstance(value, str):
-                    normalized_exts = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
+                    normalized_exts = [
+                        ext.strip().lower() for ext in value.split(",") if ext.strip()
+                    ]
                 elif isinstance(value, list):
-                    normalized_exts = [str(ext).strip().lower() for ext in value if str(ext).strip()]
+                    normalized_exts = [
+                        str(ext).strip().lower() for ext in value if str(ext).strip()
+                    ]
                 else:
                     normalized_exts = []
-                normalized_exts = [ext if ext.startswith(".") else f".{ext}" for ext in normalized_exts]
+                normalized_exts = [
+                    ext if ext.startswith(".") else f".{ext}" for ext in normalized_exts
+                ]
                 if set(normalized_exts) == LEGACY_ALLOWED_EXTENSIONS:
                     is_default_value = True
             if not is_default_value:
@@ -441,7 +471,9 @@ class PluginRuntimeMixin:
     def _get_backup_retry_file(self, retry_key: str) -> Path:
         """获取备份重试状态文件路径。"""
         safe_key = "".join(c if c.isalnum() or c in "._-" else "_" for c in retry_key)
-        retry_dir = Path(StarTools.get_data_dir("astrbot_plugin_openlistfile")) / "backup_retry"
+        retry_dir = (
+            Path(StarTools.get_data_dir("astrbot_plugin_openlistfile")) / "backup_retry"
+        )
         ensure_dir(retry_dir)
         return retry_dir / f"{safe_key}.json"
 
@@ -480,10 +512,14 @@ class PluginRuntimeMixin:
         """标准化 OpenList 路径。"""
         return normalize_openlist_path(path)
 
-    def _resolve_target_path(self, user_id: str, path: str, default_to_current: bool = True) -> str:
+    def _resolve_target_path(
+        self, user_id: str, path: str, default_to_current: bool = True
+    ) -> str:
         """解析目标绝对路径。"""
         current_path = self._get_user_navigation_state(user_id)["current_path"]
-        return resolve_target_path(current_path, path, default_to_current=default_to_current)
+        return resolve_target_path(
+            current_path, path, default_to_current=default_to_current
+        )
 
     def _resolve_path_candidates(
         self,
@@ -493,37 +529,30 @@ class PluginRuntimeMixin:
     ) -> List[str]:
         """生成兼容旧用法的候选路径列表。"""
         current_path = self._get_user_navigation_state(user_id)["current_path"]
-        return resolve_path_candidates(current_path, path, default_to_current=default_to_current)
+        return resolve_path_candidates(
+            current_path, path, default_to_current=default_to_current
+        )
 
     def _strip_fixed_base_directory(self, path: str, user_config: Dict) -> str:
         """去掉固定根目录前缀。"""
-        return strip_fixed_base_directory(path, user_config.get("fixed_base_directory", ""))
+        return strip_fixed_base_directory(
+            path, user_config.get("fixed_base_directory", "")
+        )
 
     def _get_item_full_path(self, user_id: str, item: Dict, user_config: Dict) -> str:
         """推导列表项的完整路径。"""
         current_path = self._get_user_navigation_state(user_id).get("current_path", "/")
-        return get_item_full_path(item, current_path, user_config.get("fixed_base_directory", ""))
-
-    def _is_regular_message_event(self, event: AstrMessageEvent) -> bool:
-        """过滤 notice、自发消息等非普通消息事件。"""
-        message_obj = getattr(event, "message_obj", None)
-        raw_event_data = getattr(message_obj, "raw_message", None)
-        self_id = getattr(message_obj, "self_id", None)
-        sender = getattr(message_obj, "sender", None)
-        sender_id = getattr(sender, "user_id", None) if sender else None
-        astr_message_type = getattr(message_obj, "type", None)
-        type_name = (
-            getattr(astr_message_type, "name", str(astr_message_type))
-            if astr_message_type is not None
-            else None
+        return get_item_full_path(
+            item, current_path, user_config.get("fixed_base_directory", "")
         )
-        return is_regular_message_event(raw_event_data, self_id, sender_id, type_name)
 
     def _get_user_upload_state(self, state_key: str) -> Dict:
         """获取用户上传状态。"""
         return get_user_upload_state(self.user_upload_state, state_key)
 
-    def _set_user_upload_waiting(self, state_key: str, waiting: bool, target_path: str = "/"):
+    def _set_user_upload_waiting(
+        self, state_key: str, waiting: bool, target_path: str = "/"
+    ):
         """设置用户上传等待状态。"""
         set_user_upload_waiting(self.user_upload_state, state_key, waiting, target_path)
 
@@ -543,7 +572,9 @@ class PluginRuntimeMixin:
 
     def _sanitize_filename(self, filename: str, fallback: str = "file") -> str:
         """生成安全的临时文件名片段。"""
-        safe_name = "".join(c for c in (filename or "") if c.isalnum() or c in "._- ").strip(" .")
+        safe_name = "".join(
+            c for c in (filename or "") if c.isalnum() or c in "._- "
+        ).strip(" .")
         return safe_name[:100] or fallback
 
     def _unique_suffix(self) -> str:
@@ -557,7 +588,9 @@ class PluginRuntimeMixin:
         rendered = template.replace("{group_id}", group_id)
         return self._normalize_openlist_path(rendered)
 
-    def _get_autobackup_target_path(self, global_cfg: Dict, group_id: str) -> Optional[str]:
+    def _get_autobackup_target_path(
+        self, global_cfg: Dict, group_id: str
+    ) -> Optional[str]:
         """解析当前群的自动备份目标路径。"""
         group_id = str(group_id)
         default_path = global_cfg.get("backup_default_path", "/backup/group_{group_id}")
@@ -599,7 +632,7 @@ class PluginRuntimeMixin:
         title = current_path if is_search_result else f"📁 {current_path}"
 
         if not files:
-            return f"{title}\n\n❌ 列表为空"
+            return f"{title}\n\u200b\n❌ 列表为空"
 
         nav_state = self._get_user_navigation_state(user_id)
         current_page = nav_state.get("current_page", 1)
@@ -610,7 +643,7 @@ class PluginRuntimeMixin:
         end_index = start_index + max_files_per_page
         items_to_display = files[start_index:end_index]
 
-        result = f"{title}\n\n"
+        result = f"{title}\n\u200b\n"
         for index, item in enumerate(items_to_display, start=start_index + 1):
             name = item.get("name", "")
             size = item.get("size", 0)
@@ -664,7 +697,7 @@ class PluginRuntimeMixin:
             files_only_count = total_items - dirs_count
             result += f" | 📊 总计: {dirs_count} 个文件夹, {files_only_count} 个文件"
 
-        result += "\n\n💡 快速导航:"
+        result += "\n\u200b\n💡 快速导航:"
         result += "\n   • /ol ls 序号 - 进入目录/获取链接"
         result += "\n   • /ol dl 序号 - 下载并发送文件"
         if not is_search_result:

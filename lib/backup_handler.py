@@ -58,8 +58,14 @@ async def run_group_file_autobackup(
         file_path_obj = None
         try:
             max_size_mb = plugin._get_size_limit_mb(user_config, "backup_max_size", 0)
-            if max_size_mb > 0 and file_size is not None and file_size > (max_size_mb * 1024 * 1024):
-                logger.debug(f"⏭️ [自动备份] 文件 {file_name} 事件大小 {file_size} 超过限制 {max_size_mb}MB，跳过。")
+            if (
+                max_size_mb > 0
+                and file_size is not None
+                and file_size > (max_size_mb * 1024 * 1024)
+            ):
+                logger.debug(
+                    f"⏭️ [自动备份] 文件 {file_name} 事件大小 {file_size} 超过限制 {max_size_mb}MB，跳过。"
+                )
                 return
 
             logger.info(f"🚀 [自动备份] 发现新文件: {file_name} -> {target_path}")
@@ -71,16 +77,23 @@ async def run_group_file_autobackup(
                     list_result = await client.list_files(target_path, per_page=0)
                     if list_result is not None:
                         for existing in list_result.get("content") or []:
-                            if existing.get("is_dir", False) or existing.get("name") != file_name:
+                            if (
+                                existing.get("is_dir", False)
+                                or existing.get("name") != file_name
+                            ):
                                 continue
                             try:
                                 existing_size = int(existing.get("size", 0))
-                                expected_size = int(file_size) if file_size is not None else None
+                                expected_size = (
+                                    int(file_size) if file_size is not None else None
+                                )
                             except (TypeError, ValueError):
                                 expected_size = None
                                 existing_size = None
                             if expected_size is None or existing_size == expected_size:
-                                logger.debug(f"⏭️ [自动备份] 跳过已存在文件: {target_path}/{file_name}")
+                                logger.debug(
+                                    f"⏭️ [自动备份] 跳过已存在文件: {target_path}/{file_name}"
+                                )
                                 return
 
                 success = False
@@ -96,8 +109,12 @@ async def run_group_file_autobackup(
                         "file_size": file_size,
                         "busid": busid,
                     }
-                    retry_attempts = plugin._get_positive_int_config(user_config, "backup_retry_attempts", 3)
-                    retry_delay = plugin._get_positive_int_config(user_config, "backup_retry_delay", 5, minimum=0)
+                    retry_attempts = plugin._get_positive_int_config(
+                        user_config, "backup_retry_attempts", 3
+                    )
+                    retry_delay = plugin._get_positive_int_config(
+                        user_config, "backup_retry_delay", 5, minimum=0
+                    )
                     if file_id:
                         success, reason = await upload_group_file_with_retry(
                             plugin,
@@ -111,13 +128,22 @@ async def run_group_file_autobackup(
                             initial_url=file_url,
                         )
                     else:
-                        logger.debug(f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}")
-                        success = await client.upload_url_stream(file_url, target_path, file_name, file_size)
+                        logger.debug(
+                            f"🚀 [自动备份] 使用 URL 流式中转: {file_name}, size={file_size}, target={target_path}"
+                        )
+                        success = await client.upload_url_stream(
+                            file_url, target_path, file_name, file_size
+                        )
                         reason = "URL 流式中转上传失败"
 
                     if not success:
-                        logger.warning(f"⚠️ [自动备份] URL 上传失败，回退本地文件上传: {file_name}, reason={reason}")
-                        success, file_path_obj = await _upload_group_file_via_local_file(
+                        logger.warning(
+                            f"⚠️ [自动备份] URL 上传失败，回退本地文件上传: {file_name}, reason={reason}"
+                        )
+                        (
+                            success,
+                            file_path_obj,
+                        ) = await _upload_group_file_via_local_file(
                             client,
                             file_component,
                             file_name,
@@ -145,13 +171,17 @@ async def run_group_file_autobackup(
                 try:
                     file_path_obj.unlink()
                 except OSError as e:
-                    logger.warning(f"⚠️ [自动备份] 清理临时文件失败: group={group_id}, file={file_name}, err={e}")
+                    logger.warning(
+                        f"⚠️ [自动备份] 清理临时文件失败: group={group_id}, file={file_name}, err={e}"
+                    )
 
 
 async def handle_group_file_upload(plugin, event: AstrMessageEvent):
     """处理群文件上传事件（自动备份）"""
     raw_event_data = event.message_obj.raw_message
-    message_list = raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
+    message_list = (
+        raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
+    )
     if not isinstance(message_list, list):
         return
 
@@ -187,13 +217,19 @@ async def handle_group_file_upload(plugin, event: AstrMessageEvent):
 
             user_config = global_cfg
             if not plugin._validate_config(user_config):
-                logger.warning(f"⚠️ [自动备份] 群 {group_id} 触发了自动备份，但未找到有效的 Openlist 配置。")
+                logger.warning(
+                    f"⚠️ [自动备份] 群 {group_id} 触发了自动备份，但未找到有效的 Openlist 配置。"
+                )
                 return
 
             if file_size is not None:
-                max_size_mb = plugin._get_size_limit_mb(user_config, "backup_max_size", 0)
+                max_size_mb = plugin._get_size_limit_mb(
+                    user_config, "backup_max_size", 0
+                )
                 if max_size_mb > 0 and file_size > (max_size_mb * 1024 * 1024):
-                    logger.debug(f"⏭️ [自动备份] 文件 {file_name} 超过限制 {max_size_mb}MB (事件报告大小 {file_size})，跳过。")
+                    logger.debug(
+                        f"⏭️ [自动备份] 文件 {file_name} 超过限制 {max_size_mb}MB (事件报告大小 {file_size})，跳过。"
+                    )
                     return
 
             file_component = None
@@ -204,11 +240,15 @@ async def handle_group_file_upload(plugin, event: AstrMessageEvent):
             if not file_component:
                 return
 
-            allowed_exts = plugin._get_extension_filter(user_config, "backup_allowed_extensions")
+            allowed_exts = plugin._get_extension_filter(
+                user_config, "backup_allowed_extensions"
+            )
             if allowed_exts:
                 ext = Path(file_name.lower()).suffix
                 if ext not in allowed_exts:
-                    logger.debug(f"⏭️ [自动备份] 文件 {file_name} 后缀 {ext} 不在允许范围内，跳过。")
+                    logger.debug(
+                        f"⏭️ [自动备份] 文件 {file_name} 后缀 {ext} 不在允许范围内，跳过。"
+                    )
                     return
 
             task_user_config = dict(user_config)
@@ -230,14 +270,18 @@ async def handle_group_file_upload(plugin, event: AstrMessageEvent):
             break
 
 
-async def get_group_files_recursive(plugin, bot, group_id: int, folder_id: str = "/", current_path: str = "") -> List[Dict]:
+async def get_group_files_recursive(
+    plugin, bot, group_id: int, folder_id: str = "/", current_path: str = ""
+) -> List[Dict]:
     """递归获取群文件列表"""
     all_files = []
     try:
         if folder_id == "/":
             res = await bot.api.call_action("get_group_root_files", group_id=group_id)
         else:
-            res = await bot.api.call_action("get_group_files_by_folder", group_id=group_id, folder_id=folder_id)
+            res = await bot.api.call_action(
+                "get_group_files_by_folder", group_id=group_id, folder_id=folder_id
+            )
 
         if not res:
             return []
@@ -254,7 +298,11 @@ async def get_group_files_recursive(plugin, bot, group_id: int, folder_id: str =
             sub_folder_name = folder.get("folder_name")
             if sub_folder_id:
                 sub_files = await get_group_files_recursive(
-                    plugin, bot, group_id, sub_folder_id, f"{current_path}/{sub_folder_name}"
+                    plugin,
+                    bot,
+                    group_id,
+                    sub_folder_id,
+                    f"{current_path}/{sub_folder_name}",
                 )
                 all_files.extend(sub_files)
 
@@ -264,7 +312,9 @@ async def get_group_files_recursive(plugin, bot, group_id: int, folder_id: str =
         return all_files
 
 
-async def backup_group_files(plugin, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict):
+async def backup_group_files(
+    plugin, event: AstrMessageEvent, group_id: int, target_path: str, user_config: Dict
+):
     """执行群文件备份"""
     bot = event.bot
     async for result in do_backup_logic(
@@ -282,7 +332,9 @@ async def backup_group_files(plugin, event: AstrMessageEvent, group_id: int, tar
 async def retry_last_backup(plugin, event: AstrMessageEvent, user_config: Dict):
     """重试最近一次手动备份失败项。"""
     if event.platform_meta.name != "aiocqhttp":
-        yield event.plain_result("❌ 备份重试仅支持 aiocqhttp 协议端（NapCat/LLOneBot 等）。")
+        yield event.plain_result(
+            "❌ 备份重试仅支持 aiocqhttp 协议端（NapCat/LLOneBot 等）。"
+        )
         return
     retry_key = plugin._get_backup_retry_key(event)
     retry_state = plugin._load_backup_retry_state(retry_key)
@@ -295,8 +347,7 @@ async def retry_last_backup(plugin, event: AstrMessageEvent, user_config: Dict):
     failed_items = retry_state["items"]
     plugin._delete_backup_retry_state(retry_key)
     yield event.plain_result(
-        f"🔁 开始重试上次备份失败的 {len(failed_items)} 个文件\n"
-        f"📂 目标: {target_path}"
+        f"🔁 开始重试上次备份失败的 {len(failed_items)} 个文件\n📂 目标: {target_path}"
     )
     async for result in do_backup_logic(
         plugin,
@@ -353,28 +404,41 @@ async def upload_group_file_with_retry(
                 download_url = url_res.get("url") if isinstance(url_res, dict) else None
             if not download_url:
                 reason = "无法获取群文件下载 URL"
-                logger.warning(f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason}")
+                logger.warning(
+                    f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason}"
+                )
             else:
                 logger.debug(
                     f"🚀 [群备份] 使用 URL 流式中转: {file_name}, "
                     f"size={upload_size}, target={target_dir}, attempt={attempt}/{attempts}"
                 )
                 is_large = upload_size is not None and upload_size > 50 * 1024 * 1024
-                if is_large and not client.transfer_config.get("debug_transfer_logging"):
+                if is_large and not client.transfer_config.get(
+                    "debug_transfer_logging"
+                ):
                     logger.info(
                         f"📤 [群备份] 大文件上传中: {file_name} ({upload_size / 1024 / 1024:.1f}MB), "
                         f"目标: {target_dir}"
                     )
-                if await client.upload_url_stream(download_url, target_dir, file_name, upload_size):
+                if await client.upload_url_stream(
+                    download_url, target_dir, file_name, upload_size
+                ):
                     return True, ""
                 reason = "URL 流式中转上传失败"
-                logger.warning(f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason}")
+                logger.warning(
+                    f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason}"
+                )
         except asyncio.TimeoutError:
             reason = "获取群文件URL超时"
-            logger.warning(f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason} (超时{url_acquire_timeout}s)")
+            logger.warning(
+                f"备份文件 {file_name} 第 {attempt}/{attempts} 次失败: {reason} (超时{url_acquire_timeout}s)"
+            )
         except Exception as e:
             reason = str(e)
-            logger.error(f"备份文件 {file_name} 第 {attempt}/{attempts} 次异常: {e}", exc_info=True)
+            logger.error(
+                f"备份文件 {file_name} 第 {attempt}/{attempts} 次异常: {e}",
+                exc_info=True,
+            )
 
         if attempt < attempts:
             await asyncio.sleep(max(0, retry_delay))
@@ -407,7 +471,9 @@ async def do_backup_logic(
                 yield event.plain_result("❌ 未找到任何群文件或获取失败。")
             return
 
-        allowed_exts = plugin._get_extension_filter(user_config, "backup_allowed_extensions")
+        allowed_exts = plugin._get_extension_filter(
+            user_config, "backup_allowed_extensions"
+        )
         max_size_mb = plugin._get_size_limit_mb(user_config, "backup_max_size", 0)
         max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
 
@@ -428,7 +494,11 @@ async def do_backup_logic(
 
     if not filtered_items:
         if not is_auto:
-            message = "⚠️ 没有可重试的失败项。" if is_retry else "⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。"
+            message = (
+                "⚠️ 没有可重试的失败项。"
+                if is_retry
+                else "⚠️ 扫描完成，但没有符合过滤条件的文件需要备份。"
+            )
             yield event.plain_result(message)
         return
 
@@ -436,7 +506,9 @@ async def do_backup_logic(
     if is_retry:
         logger.info(f"🔁 [群备份] 开始重试 {total} 个失败文件，目标路径: {target_path}")
     elif not is_auto:
-        yield event.plain_result(f"📦 扫描完成，共发现 {total} 个文件需要备份。\n🚀 开始备份到 Openlist: {target_path}")
+        yield event.plain_result(
+            f"📦 扫描完成，共发现 {total} 个文件需要备份。\n🚀 开始备份到 Openlist: {target_path}"
+        )
     else:
         logger.info(f"🚀 [自动备份] 开始处理 {total} 个新文件，目标路径: {target_path}")
 
@@ -444,8 +516,12 @@ async def do_backup_logic(
     fail_count = 0
     skipped_count = 0
     failed_items = []
-    retry_attempts = plugin._get_positive_int_config(user_config, "backup_retry_attempts", 3)
-    retry_delay = plugin._get_positive_int_config(user_config, "backup_retry_delay", 5, minimum=0)
+    retry_attempts = plugin._get_positive_int_config(
+        user_config, "backup_retry_attempts", 3
+    )
+    retry_delay = plugin._get_positive_int_config(
+        user_config, "backup_retry_delay", 5, minimum=0
+    )
     skip_existing = plugin._get_bool_config(user_config, "backup_skip_existing", True)
     existing_cache = new_lru_mapping()
     existing_cache_lock = asyncio.Lock()
@@ -471,10 +547,14 @@ async def do_backup_logic(
                     for existing in list_result.get("content") or []:
                         if not existing.get("is_dir", False):
                             files[existing.get("name", "")] = existing
-                remember_lru_entry(existing_cache, target_dir, files, existing_cache_max)
+                remember_lru_entry(
+                    existing_cache, target_dir, files, existing_cache_max
+                )
                 return files
 
-        async def existing_file_matches(target_dir: str, file_name: str, file_size) -> bool:
+        async def existing_file_matches(
+            target_dir: str, file_name: str, file_size
+        ) -> bool:
             if not skip_existing:
                 return False
             existing_files = await get_existing_files(target_dir)
@@ -499,7 +579,9 @@ async def do_backup_logic(
                     "size": file_size or 0,
                     "is_dir": False,
                 }
-                remember_lru_entry(existing_cache, target_dir, files, existing_cache_max)
+                remember_lru_entry(
+                    existing_cache, target_dir, files, existing_cache_max
+                )
 
         async def upload_task(item, idx):
             nonlocal success_count, fail_count, skipped_count
@@ -516,15 +598,21 @@ async def do_backup_logic(
                         return
 
                     target_dir = target_dir or "/"
-                    if await existing_file_matches(target_dir, file_name, item.get("file_size")):
+                    if await existing_file_matches(
+                        target_dir, file_name, item.get("file_size")
+                    ):
                         skipped_count += 1
-                        logger.debug(f"⏭️ [群备份] 跳过已存在文件: {target_dir}/{file_name}")
+                        logger.debug(
+                            f"⏭️ [群备份] 跳过已存在文件: {target_dir}/{file_name}"
+                        )
                         return
 
                     try:
                         fs = int(item.get("file_size", 0))
                         if fs > 50 * 1024 * 1024 and not is_auto:
-                            logger.info(f"📤 [群备份] 处理大文件: {file_name} ({fs / 1024 / 1024:.1f}MB)")
+                            logger.info(
+                                f"📤 [群备份] 处理大文件: {file_name} ({fs / 1024 / 1024:.1f}MB)"
+                            )
                     except (TypeError, ValueError):
                         pass
 
@@ -540,7 +628,9 @@ async def do_backup_logic(
                     )
                     if up_res:
                         success_count += 1
-                        await remember_existing_file(target_dir, file_name, item.get("file_size"))
+                        await remember_existing_file(
+                            target_dir, file_name, item.get("file_size")
+                        )
                     else:
                         fail_count += 1
                         failed_item = dict(item)
@@ -555,7 +645,10 @@ async def do_backup_logic(
 
         batch_size = 5
         for i in range(0, total, batch_size):
-            batch_tasks = [upload_task(item, j) for j, item in enumerate(filtered_items[i:i + batch_size], start=i)]
+            batch_tasks = [
+                upload_task(item, j)
+                for j, item in enumerate(filtered_items[i : i + batch_size], start=i)
+            ]
             await asyncio.gather(*batch_tasks)
             logger.info(
                 f"📈 备份进度: {min(i + batch_size, total)}/{total} "
@@ -578,7 +671,9 @@ async def do_backup_logic(
                 )
             else:
                 plugin._delete_backup_retry_state(retry_key)
-        retry_hint = "\n💡 发送 /ol backup retry 可只重试失败项。" if failed_items else ""
+        retry_hint = (
+            "\n💡 发送 /ol backup retry 可只重试失败项。" if failed_items else ""
+        )
         yield event.plain_result(
             f"✅ 备份任务结束!\n"
             f"📊 统计: 总计 {total}, 成功 {success_count}, 跳过 {skipped_count}, 失败 {fail_count}\n"
@@ -588,18 +683,26 @@ async def do_backup_logic(
     else:
         if success_count:
             plugin.cache_manager.clear_cache()
-        logger.info(f"✅ [自动备份] 任务结束。群 {group_id}: 成功 {success_count}, 跳过 {skipped_count}, 失败 {fail_count}")
+        logger.info(
+            f"✅ [自动备份] 任务结束。群 {group_id}: 成功 {success_count}, 跳过 {skipped_count}, 失败 {fail_count}"
+        )
 
 
-async def handle_backup_command(plugin, event: AstrMessageEvent, arg1: str = None, arg2: str = None):
+async def handle_backup_command(
+    plugin, event: AstrMessageEvent, arg1: str = None, arg2: str = None
+):
     """备份群文件到 Openlist"""
     if event.platform_meta.name != "aiocqhttp":
-        yield event.plain_result("❌ 备份功能仅支持 aiocqhttp 协议端（NapCat/LLOneBot 等）。")
+        yield event.plain_result(
+            "❌ 备份功能仅支持 aiocqhttp 协议端（NapCat/LLOneBot 等）。"
+        )
         return
     user_id = event.get_sender_id()
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     arg1 = (arg1 or "").strip()
@@ -623,7 +726,9 @@ async def handle_backup_command(plugin, event: AstrMessageEvent, arg1: str = Non
                 yield event.plain_result(f"❌ 无效的群号格式: {arg}")
                 return
         else:
-            yield event.plain_result(f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。")
+            yield event.plain_result(
+                f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。"
+            )
             return
 
     if not target_group_id:
@@ -634,15 +739,24 @@ async def handle_backup_command(plugin, event: AstrMessageEvent, arg1: str = Non
             return
 
     target_path = plugin._render_backup_path(
-        target_path_arg or user_config.get("backup_default_path", "/backup/group_{group_id}"),
+        target_path_arg
+        or user_config.get("backup_default_path", "/backup/group_{group_id}"),
         target_group_id,
     )
 
-    async for result in backup_group_files(plugin, event, target_group_id, target_path, user_config):
+    async for result in backup_group_files(
+        plugin, event, target_group_id, target_path, user_config
+    ):
         yield result
 
 
-async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str = "show", arg1: str = None, arg2: str = None):
+async def handle_autobackup_command(
+    plugin,
+    event: AstrMessageEvent,
+    action: str = "show",
+    arg1: str = None,
+    arg2: str = None,
+):
     """配置自动备份"""
     global_cfg = plugin.get_global_config()
     if not plugin._is_event_admin(event):
@@ -669,7 +783,9 @@ async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str
                 else:
                     gid = item
                     path = plugin._render_backup_path(
-                        global_cfg.get("backup_default_path", "/backup/group_{group_id}"),
+                        global_cfg.get(
+                            "backup_default_path", "/backup/group_{group_id}"
+                        ),
                         gid,
                     )
                 lines.append(f"• 群 {gid} -> {path}")
@@ -697,7 +813,9 @@ async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str
         elif arg.startswith("@"):
             target_gid = arg[1:]
         else:
-            yield event.plain_result(f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。")
+            yield event.plain_result(
+                f"⚠️ 无法识别参数 '{arg}'。路径请以 / 开头，群号请以 @ 开头。"
+            )
             return
 
     if not target_gid:
@@ -712,12 +830,17 @@ async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str
 
     if action == "enable":
         target_path = plugin._render_backup_path(
-            target_path or global_cfg.get("backup_default_path", "/backup/group_{group_id}"),
+            target_path
+            or global_cfg.get("backup_default_path", "/backup/group_{group_id}"),
             target_gid,
         )
 
         new_entry = f"{target_gid}:{target_path}"
-        new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]
+        new_groups = [
+            item
+            for item in groups
+            if (item.split(":", 1)[0] if ":" in item else item) != target_gid
+        ]
         new_groups.append(new_entry)
         local_cfg["autobackup_groups"] = new_groups
         plugin.global_config_manager.save_config(local_cfg)
@@ -739,10 +862,16 @@ async def handle_autobackup_command(plugin, event: AstrMessageEvent, action: str
             ):
                 yield result
         else:
-            yield event.plain_result("💡 当前平台不支持全量群文件扫描，已仅开启后续自动备份。")
+            yield event.plain_result(
+                "💡 当前平台不支持全量群文件扫描，已仅开启后续自动备份。"
+            )
 
     elif action == "disable":
-        new_groups = [item for item in groups if (item.split(":", 1)[0] if ":" in item else item) != target_gid]
+        new_groups = [
+            item
+            for item in groups
+            if (item.split(":", 1)[0] if ":" in item else item) != target_gid
+        ]
         if len(new_groups) < len(groups):
             local_cfg["autobackup_groups"] = new_groups
             plugin.global_config_manager.save_config(local_cfg)

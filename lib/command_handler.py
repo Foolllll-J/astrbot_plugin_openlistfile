@@ -1,5 +1,5 @@
 import posixpath
-from typing import Dict, Tuple
+from typing import Tuple
 
 from astrbot.api import logger
 
@@ -142,14 +142,14 @@ def build_help_text(is_user_auth_mode: bool, is_config_valid: bool) -> str:
 `/ol config clear_cache`"""
 
     if is_user_auth_mode:
-        help_text += "\n\n👤 当前模式: 用户独立认证\n- 每位用户都需要单独执行 `/ol config setup` 完成配置。"
+        help_text += "\n\u200b\n👤 当前模式: 用户独立认证\n- 每位用户都需要单独执行 `/ol config setup` 完成配置。"
         if not is_config_valid:
-            help_text += "\n\n⚠️ 您当前尚未完成配置，请先执行 `/ol config setup`。"
+            help_text += "\n\u200b\n⚠️ 您当前尚未完成配置，请先执行 `/ol config setup`。"
     else:
-        help_text += "\n\n🌐 当前模式: 全局共享\n- 所有用户共用管理员预设的 OpenList 服务配置。"
+        help_text += "\n\u200b\n🌐 当前模式: 全局共享\n- 所有用户共用管理员预设的 OpenList 服务配置。"
 
     help_text += (
-        "\n\n💡 通用提示:\n"
+        "\n\u200b\n💡 通用提示:\n"
         "1. 路径区分大小写，以 `/` 开头表示根目录。\n"
         "2. `ls` 主要用于浏览与取链接，`dl` 会直接下发文件。\n"
         "3. 管理员可在插件配置页调整全局设置。"
@@ -184,15 +184,22 @@ def normalize_config_value(key: str, value: str) -> Tuple[object, str]:
             return None, "❌ upload_retry_delay 必须大于等于 0"
         if key in {"upload_chunk_size_mb", "upload_progress_step_mb"} and parsed < 1:
             return None, f"❌ {key} 必须大于 0"
-        if key in {
-            "upstream_connect_timeout",
-            "upstream_read_timeout",
-            "openlist_connect_timeout",
-            "openlist_upload_response_timeout",
-        } and parsed < 1:
+        if (
+            key
+            in {
+                "upstream_connect_timeout",
+                "upstream_read_timeout",
+                "openlist_connect_timeout",
+                "openlist_upload_response_timeout",
+            }
+            and parsed < 1
+        ):
             return None, f"❌ {key} 必须大于 0"
         if key == "max_preview_size" and parsed < -1:
-            return None, "❌ max_preview_size 必须大于等于 -1（-1 表示禁用，0 表示不限）"
+            return (
+                None,
+                "❌ max_preview_size 必须大于等于 -1（-1 表示禁用，0 表示不限）",
+            )
         if key == "text_preview_length" and parsed < 1:
             return None, "❌ text_preview_length 必须大于 0"
         return parsed, ""
@@ -201,7 +208,17 @@ def normalize_config_value(key: str, value: str) -> Tuple[object, str]:
         return value.lower() in {"true", "1", "yes", "on"}, ""
 
     if key in EXTENSION_LIST_KEYS:
-        if value.strip().lower() in {"none", "null", "empty", "clear", "all", "*", "空", "不限", "不限制"}:
+        if value.strip().lower() in {
+            "none",
+            "null",
+            "empty",
+            "clear",
+            "all",
+            "*",
+            "空",
+            "不限",
+            "不限制",
+        }:
             return [], ""
         items = [ext.strip().lower() for ext in value.split(",") if ext.strip()]
         return [ext if ext.startswith(".") else f".{ext}" for ext in items], ""
@@ -209,7 +226,9 @@ def normalize_config_value(key: str, value: str) -> Tuple[object, str]:
     return value, ""
 
 
-async def handle_config_command(plugin, event, action: str = "show", key: str = "", value: str = ""):
+async def handle_config_command(
+    plugin, event, action: str = "show", key: str = "", value: str = ""
+):
     user_id = event.get_sender_id()
     if action == "show":
         user_config = plugin.get_user_config(user_id)
@@ -250,7 +269,9 @@ async def handle_config_command(plugin, event, action: str = "show", key: str = 
             yield event.plain_result("❌ 请指定配置项值")
             return
         if key not in VALID_CONFIG_KEYS:
-            yield event.plain_result(f"❌ 未知的配置项: {key}。可用项: {', '.join(sorted(VALID_CONFIG_KEYS))}")
+            yield event.plain_result(
+                f"❌ 未知的配置项: {key}。可用项: {', '.join(sorted(VALID_CONFIG_KEYS))}"
+            )
             return
 
         user_manager = plugin.get_user_config_manager(user_id)
@@ -266,14 +287,20 @@ async def handle_config_command(plugin, event, action: str = "show", key: str = 
             user_config["setup_completed"] = True
         user_manager.save_config(user_config)
 
-        display_value = "***" if save_key in SENSITIVE_CONFIG_KEYS else str(normalized_value)
-        yield event.plain_result(f"✅ 已为用户 {event.get_sender_name()} 设置 {save_key} = {display_value}")
+        display_value = (
+            "***" if save_key in SENSITIVE_CONFIG_KEYS else str(normalized_value)
+        )
+        yield event.plain_result(
+            f"✅ 已为用户 {event.get_sender_name()} 设置 {save_key} = {display_value}"
+        )
         return
 
     if action == "test":
         user_config = plugin.get_user_config(user_id)
         if not plugin._validate_config(user_config):
-            yield event.plain_result("❌ 请先配置 Openlist URL\n💡 使用 /ol config setup 开始配置向导")
+            yield event.plain_result(
+                "❌ 请先配置 Openlist URL\n💡 使用 /ol config setup 开始配置向导"
+            )
             return
         try:
             async with plugin._create_openlist_client(user_config) as client:
@@ -287,7 +314,9 @@ async def handle_config_command(plugin, event, action: str = "show", key: str = 
                 f"用户 {user_id} 连接测试失败: {e}, 服务器: {user_config.get('openlist_url')}",
                 exc_info=True,
             )
-            yield event.plain_result(f"❌ 连接测试失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+            yield event.plain_result(
+                f"❌ 连接测试失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+            )
         return
 
     if action == "clear_cache":
@@ -302,7 +331,9 @@ async def handle_list_files(plugin, event, path: str = ""):
     user_id = event.get_sender_id()
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     path = (path or "").strip()
@@ -327,14 +358,21 @@ async def handle_list_files(plugin, event, path: str = ""):
             target_path = plugin._get_item_full_path(user_id, item, user_config)
             path_candidates = [target_path]
         else:
-            async for result in plugin._get_and_send_download_link(event, item, user_config):
+            async for result in plugin._get_and_send_download_link(
+                event, item, user_config
+            ):
                 yield result
             return
     else:
         path_candidates = plugin._resolve_path_candidates(user_id, path)
 
     try:
-        cache_enabled = str(user_config.get("enable_cache", True)).lower() not in {"false", "0", "no", "off"}
+        cache_enabled = str(user_config.get("enable_cache", True)).lower() not in {
+            "false",
+            "0",
+            "no",
+            "off",
+        }
         cache_duration = plugin._get_cache_duration_seconds(user_config)
         async with plugin._create_openlist_client(user_config) as client:
             for candidate_path in path_candidates:
@@ -366,15 +404,24 @@ async def handle_list_files(plugin, event, path: str = ""):
                 if list_result is not None:
                     files = list_result.get("content") or []
                     plugin._update_user_navigation_state(user_id, candidate_path, files)
-                    yield event.plain_result(plugin._format_file_list(files, candidate_path, user_config, user_id))
+                    yield event.plain_result(
+                        plugin._format_file_list(
+                            files, candidate_path, user_config, user_id
+                        )
+                    )
                     return
 
             display_path = " / ".join(path_candidates)
             logger.warning(f"用户 {user_id} 无法访问路径候选: {display_path}")
             yield event.plain_result(f"❌ 无法访问路径: {display_path}")
     except Exception as e:
-        logger.error(f"用户 {user_id} 列出文件失败: {e}, 路径候选: {path_candidates}", exc_info=True)
-        yield event.plain_result(f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        logger.error(
+            f"用户 {user_id} 列出文件失败: {e}, 路径候选: {path_candidates}",
+            exc_info=True,
+        )
+        yield event.plain_result(
+            f"❌ 操作失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
 
 
 async def handle_next_page(plugin, event):
@@ -382,7 +429,9 @@ async def handle_next_page(plugin, event):
     user_config = plugin.get_user_config(user_id)
     nav_state = plugin._get_user_navigation_state(user_id)
     if not nav_state.get("items"):
-        yield event.plain_result("🤔 没有可供翻页的列表，请先使用 /ol ls 查看一个目录。")
+        yield event.plain_result(
+            "🤔 没有可供翻页的列表，请先使用 /ol ls 查看一个目录。"
+        )
         return
 
     current_page = nav_state.get("current_page", 1)
@@ -394,7 +443,11 @@ async def handle_next_page(plugin, event):
         return
 
     nav_state["current_page"] += 1
-    yield event.plain_result(plugin._format_file_list(all_items, nav_state["current_path"], user_config, user_id))
+    yield event.plain_result(
+        plugin._format_file_list(
+            all_items, nav_state["current_path"], user_config, user_id
+        )
+    )
 
 
 async def handle_prev_page(plugin, event):
@@ -402,7 +455,9 @@ async def handle_prev_page(plugin, event):
     user_config = plugin.get_user_config(user_id)
     nav_state = plugin._get_user_navigation_state(user_id)
     if not nav_state.get("items"):
-        yield event.plain_result("🤔 没有可供翻页的列表，请先使用 /ol ls 查看一个目录。")
+        yield event.plain_result(
+            "🤔 没有可供翻页的列表，请先使用 /ol ls 查看一个目录。"
+        )
         return
 
     current_page = nav_state.get("current_page", 1)
@@ -412,7 +467,11 @@ async def handle_prev_page(plugin, event):
 
     nav_state["current_page"] -= 1
     all_items = nav_state.get("items", [])
-    yield event.plain_result(plugin._format_file_list(all_items, nav_state["current_path"], user_config, user_id))
+    yield event.plain_result(
+        plugin._format_file_list(
+            all_items, nav_state["current_path"], user_config, user_id
+        )
+    )
 
 
 async def handle_search_files(plugin, event, keyword: str, path: str = "/"):
@@ -424,7 +483,9 @@ async def handle_search_files(plugin, event, keyword: str, path: str = "/"):
     target_path = plugin._resolve_target_path(user_id, path)
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     try:
@@ -437,17 +498,26 @@ async def handle_search_files(plugin, event, keyword: str, path: str = "/"):
 
             search_title = f'🔳 搜索 "{keyword}"'
             plugin._update_user_navigation_state(user_id, search_title, files)
-            yield event.plain_result(plugin._format_file_list(files, search_title, user_config, user_id))
+            yield event.plain_result(
+                plugin._format_file_list(files, search_title, user_config, user_id)
+            )
     except Exception as e:
-        logger.error(f"用户 {user_id} 搜索文件失败: {e}, 关键词: {keyword}, 路径: {target_path}", exc_info=True)
-        yield event.plain_result(f"❌ 搜索失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        logger.error(
+            f"用户 {user_id} 搜索文件失败: {e}, 关键词: {keyword}, 路径: {target_path}",
+            exc_info=True,
+        )
+        yield event.plain_result(
+            f"❌ 搜索失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
 
 
 async def handle_quit_navigation(plugin, event):
     user_id = event.get_sender_id()
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     nav_state = plugin._get_user_navigation_state(user_id)
@@ -467,11 +537,18 @@ async def handle_quit_navigation(plugin, event):
             files = result.get("content") or []
             nav_state["current_path"] = previous_path
             nav_state["items"] = files
-            formatted_list = plugin._format_file_list(files, previous_path, user_config, user_id)
-            yield event.plain_result(f"⬅️ 已返回上级目录\n\n{formatted_list}")
+            formatted_list = plugin._format_file_list(
+                files, previous_path, user_config, user_id
+            )
+            yield event.plain_result(f"⬅️ 已返回上级目录\n\u200b\n{formatted_list}")
     except Exception as e:
-        logger.error(f"用户 {user_id} 回退目录失败: {e}, 目标路径: {previous_path}", exc_info=True)
-        yield event.plain_result(f"❌ 回退失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        logger.error(
+            f"用户 {user_id} 回退目录失败: {e}, 目标路径: {previous_path}",
+            exc_info=True,
+        )
+        yield event.plain_result(
+            f"❌ 回退失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
 
 
 async def handle_remove_command(plugin, event, path: str):
@@ -483,7 +560,9 @@ async def handle_remove_command(plugin, event, path: str):
     user_id = event.get_sender_id()
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     if path.isdigit():
@@ -524,7 +603,8 @@ async def handle_remove_command(plugin, event, path: str):
                 deleted_full_paths.append(deleted_path)
 
             is_current_path_deleted = any(
-                current_path == deleted_path or current_path.startswith(deleted_path + "/")
+                current_path == deleted_path
+                or current_path.startswith(deleted_path + "/")
                 for deleted_path in deleted_full_paths
             )
             if is_current_path_deleted:
@@ -559,7 +639,9 @@ async def handle_mkdir_command(plugin, event, name: str):
     user_id = event.get_sender_id()
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置 Openlist 连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     full_path = plugin._resolve_target_path(user_id, name)
@@ -580,7 +662,9 @@ async def handle_mkdir_command(plugin, event, name: str):
             nav_state = plugin._get_user_navigation_state(user_id)
             current_path = plugin._normalize_openlist_path(nav_state["current_path"])
             parent_path = posixpath.dirname(full_path) or "/"
-            if parent_path == current_path.rstrip("/") or (current_path == "/" and parent_path == "/"):
+            if parent_path == current_path.rstrip("/") or (
+                current_path == "/" and parent_path == "/"
+            ):
                 result = await client.list_files(current_path)
                 if result:
                     files = result.get("content") or []

@@ -23,7 +23,14 @@ DEFAULT_TRANSFER_CONFIG = {
 class ProgressFilePayload(aiohttp.Payload):
     """带进度日志的文件上传载荷，保留明确的 Content-Length。"""
 
-    def __init__(self, file_path: str, filename: str, chunk_size: int, progress_step: int, debug_logging: bool = False):
+    def __init__(
+        self,
+        file_path: str,
+        filename: str,
+        chunk_size: int,
+        progress_step: int,
+        debug_logging: bool = False,
+    ):
         super().__init__(None, content_type="application/octet-stream")
         self.file_path = Path(file_path)
         self._filename = filename
@@ -49,7 +56,9 @@ class ProgressFilePayload(aiohttp.Payload):
             local_addr = transport.get_extra_info("sockname")
             peer_addr = transport.get_extra_info("peername")
             ssl_object = transport.get_extra_info("ssl_object")
-            logger.debug(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
+            logger.debug(
+                f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}"
+            )
             self._transport_logged = True
         with open(self.file_path, "rb") as f:
             while True:
@@ -65,7 +74,9 @@ class ProgressFilePayload(aiohttp.Payload):
                 ):
                     elapsed = max(time.monotonic() - started_at, 0.001)
                     speed = uploaded / 1024 / 1024 / elapsed
-                    buffer_size = transport.get_write_buffer_size() if transport else None
+                    buffer_size = (
+                        transport.get_write_buffer_size() if transport else None
+                    )
                     logger.debug(
                         f"上传进度: {self._filename} {uploaded}/{self.file_size} bytes 已写入连接 "
                         f"speed={speed:.2f}MB/s write_buffer={buffer_size}"
@@ -82,7 +93,14 @@ class ProgressFilePayload(aiohttp.Payload):
 class ProgressStreamPayload(aiohttp.Payload):
     """从上游流读取并写入 OpenList；数据经过 AstrBot，不由 OpenList 直拉 URL。"""
 
-    def __init__(self, stream, filename: str, file_size: Optional[int] = None, progress_step: int = 64 * 1024 * 1024, debug_logging: bool = False):
+    def __init__(
+        self,
+        stream,
+        filename: str,
+        file_size: Optional[int] = None,
+        progress_step: int = 64 * 1024 * 1024,
+        debug_logging: bool = False,
+    ):
         super().__init__(None, content_type="application/octet-stream")
         self.stream = stream
         self._filename = filename
@@ -108,7 +126,9 @@ class ProgressStreamPayload(aiohttp.Payload):
             local_addr = transport.get_extra_info("sockname")
             peer_addr = transport.get_extra_info("peername")
             ssl_object = transport.get_extra_info("ssl_object")
-            logger.debug(f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}")
+            logger.debug(
+                f"OpenList 上传连接: local={local_addr}, peer={peer_addr}, ssl={bool(ssl_object)}"
+            )
             self._transport_logged = True
 
         async for chunk in self.stream:
@@ -165,8 +185,13 @@ class OpenlistClient:
         config = DEFAULT_TRANSFER_CONFIG.copy()
         if isinstance(transfer_config, dict):
             config.update({k: v for k, v in transfer_config.items() if v is not None})
-            if "debug_transfer_logging" not in transfer_config and "debug_upload_logging" in transfer_config:
-                config["debug_transfer_logging"] = transfer_config["debug_upload_logging"]
+            if (
+                "debug_transfer_logging" not in transfer_config
+                and "debug_upload_logging" in transfer_config
+            ):
+                config["debug_transfer_logging"] = transfer_config[
+                    "debug_upload_logging"
+                ]
 
         for key in [
             "upload_chunk_size",
@@ -182,9 +207,16 @@ class OpenlistClient:
                 value = DEFAULT_TRANSFER_CONFIG[key]
             config[key] = max(1, value)
 
-        value = config.get("debug_transfer_logging", DEFAULT_TRANSFER_CONFIG["debug_transfer_logging"])
+        value = config.get(
+            "debug_transfer_logging", DEFAULT_TRANSFER_CONFIG["debug_transfer_logging"]
+        )
         if isinstance(value, str):
-            config["debug_transfer_logging"] = value.strip().lower() in ("true", "1", "yes", "on")
+            config["debug_transfer_logging"] = value.strip().lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
         else:
             config["debug_transfer_logging"] = bool(value)
         return config
@@ -242,14 +274,21 @@ class OpenlistClient:
                         self.token = result.get("data", {}).get("token", "")
                         return True
                     else:
-                        logger.error(f"OpenList登录失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 用户名: {self.username}")
+                        logger.error(
+                            f"OpenList登录失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 用户名: {self.username}"
+                        )
                         return False
                 else:
                     error_text = await resp.text()
-                    logger.error(f"OpenList登录失败 - HTTP状态: {resp.status}, 响应: {error_text}, 用户名: {self.username}")
+                    logger.error(
+                        f"OpenList登录失败 - HTTP状态: {resp.status}, 响应: {error_text}, 用户名: {self.username}"
+                    )
                     return False
         except Exception as e:
-            logger.error(f"OpenList登录失败: {e}, 用户名: {self.username}, 服务器: {self.base_url}", exc_info=True)
+            logger.error(
+                f"OpenList登录失败: {e}, 用户名: {self.username}, 服务器: {self.base_url}",
+                exc_info=True,
+            )
             return False
 
     async def list_files(
@@ -277,11 +316,15 @@ class OpenlistClient:
                     if result.get("code") == 200:
                         return result.get("data")
                     else:
-                        logger.error(f"获取文件列表失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        logger.error(
+                            f"获取文件列表失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}"
+                        )
                         return None
                 else:
                     error_text = await resp.text()
-                    logger.error(f"获取文件列表失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    logger.error(
+                        f"获取文件列表失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}"
+                    )
                     return None
         except Exception as e:
             logger.error(f"获取文件列表失败: {e}, 路径: {path}", exc_info=True)
@@ -304,17 +347,23 @@ class OpenlistClient:
                     if result.get("code") == 200:
                         return result.get("data")
                     else:
-                        logger.error(f"获取文件信息失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        logger.error(
+                            f"获取文件信息失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}"
+                        )
                         return None
                 else:
                     error_text = await resp.text()
-                    logger.error(f"获取文件信息失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    logger.error(
+                        f"获取文件信息失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}"
+                    )
                     return None
         except Exception as e:
             logger.error(f"获取文件信息失败: {e}, 路径: {path}", exc_info=True)
             return None
 
-    async def search_files(self, keyword: str, path: str = "/", per_page: int = 1000) -> Optional[List[Dict]]:
+    async def search_files(
+        self, keyword: str, path: str = "/", per_page: int = 1000
+    ) -> Optional[List[Dict]]:
         """在指定路径下搜索文件"""
         try:
             headers = {}
@@ -338,29 +387,45 @@ class OpenlistClient:
                         content = result.get("data", {}).get("content")
                         return content if content is not None else []
                     else:
-                        logger.error(f"搜索文件失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 关键词: {keyword}, 路径: {path}")
+                        logger.error(
+                            f"搜索文件失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 关键词: {keyword}, 路径: {path}"
+                        )
                         return []
                 else:
                     error_text = await resp.text()
-                    logger.error(f"搜索文件失败 - HTTP状态: {resp.status}, 响应: {error_text}, 关键词: {keyword}, 路径: {path}")
+                    logger.error(
+                        f"搜索文件失败 - HTTP状态: {resp.status}, 响应: {error_text}, 关键词: {keyword}, 路径: {path}"
+                    )
                     return []
         except Exception as e:
-            logger.error(f"搜索文件失败: {e}, 关键词: {keyword}, 路径: {path}", exc_info=True)
+            logger.error(
+                f"搜索文件失败: {e}, 关键词: {keyword}, 路径: {path}", exc_info=True
+            )
             return []
 
-    async def get_download_url(self, path: str, prefer_public: bool = True) -> Optional[str]:
+    async def get_download_url(
+        self, path: str, prefer_public: bool = True
+    ) -> Optional[str]:
         """获取文件下载链接"""
         file_info = await self.get_file_info(path)
 
         if file_info and not file_info.get("is_dir", True):
             raw_url = file_info.get("raw_url")
             if raw_url:
-                if prefer_public and self.public_base_url and raw_url.startswith(self.base_url):
-                    return self.public_base_url + raw_url[len(self.base_url):]
+                if (
+                    prefer_public
+                    and self.public_base_url
+                    and raw_url.startswith(self.base_url)
+                ):
+                    return self.public_base_url + raw_url[len(self.base_url) :]
                 return raw_url
 
             sign = file_info.get("sign")
-            base_url_to_use = self.public_base_url if prefer_public and self.public_base_url else self.base_url
+            base_url_to_use = (
+                self.public_base_url
+                if prefer_public and self.public_base_url
+                else self.base_url
+            )
 
             full_path = self._with_fixed_base_directory(path)
             encoded_url_path = quote(full_path.encode("utf-8"))
@@ -381,11 +446,17 @@ class OpenlistClient:
 
         def is_admin_only_reason(reason: str) -> bool:
             reason_lower = (reason or "").strip().lower()
-            return "not an admin" in reason_lower or "you are not an admin" in reason_lower
+            return (
+                "not an admin" in reason_lower or "you are not an admin" in reason_lower
+            )
 
         async def fallback_to_raw_url(reason: str) -> Optional[Dict]:
             file_info = await self.get_file_info(path)
-            if file_info and not file_info.get("is_dir", True) and file_info.get("raw_url"):
+            if (
+                file_info
+                and not file_info.get("is_dir", True)
+                and file_info.get("raw_url")
+            ):
                 if is_admin_only_reason(reason):
                     logger.debug(
                         f"获取真实下载链接失败，已改用 raw_url 兜底: {reason}, "
@@ -426,9 +497,14 @@ class OpenlistClient:
                     return await fallback_to_raw_url(reason)
 
                 error_text = await resp.text()
-                return await fallback_to_raw_url(f"HTTP {resp.status}, 响应: {error_text}")
+                return await fallback_to_raw_url(
+                    f"HTTP {resp.status}, 响应: {error_text}"
+                )
         except Exception as e:
-            logger.error(f"获取真实下载链接失败: {e}, 路径: {path}, raw_path: {raw_path}", exc_info=True)
+            logger.error(
+                f"获取真实下载链接失败: {e}, 路径: {path}, raw_path: {raw_path}",
+                exc_info=True,
+            )
             return await fallback_to_raw_url(str(e))
 
     async def upload_file(
@@ -445,7 +521,9 @@ class OpenlistClient:
                 filename = local_path.name
 
             file_size = local_path.stat().st_size
-            logger.debug(f"开始流式上传文件: {filename}, 大小: {file_size} bytes, 目标: {target_path}")
+            logger.debug(
+                f"开始流式上传文件: {filename}, 大小: {file_size} bytes, 目标: {target_path}"
+            )
             payload = ProgressFilePayload(
                 file_path,
                 filename,
@@ -453,30 +531,50 @@ class OpenlistClient:
                 self.transfer_config["upload_progress_step"],
                 self.transfer_config["debug_transfer_logging"],
             )
-            return await self._put_payload(payload, target_path, filename, f"local_file={file_path}")
+            return await self._put_payload(
+                payload, target_path, filename, f"local_file={file_path}"
+            )
 
         except Exception as e:
-            logger.error(f"上传文件失败: {e}, 文件路径: {file_path}, 目标路径: {target_path}/{filename}", exc_info=True)
+            logger.error(
+                f"上传文件失败: {e}, 文件路径: {file_path}, 目标路径: {target_path}/{filename}",
+                exc_info=True,
+            )
             return False
 
     async def upload_url_stream(
-        self, source_url: str, target_path: str, filename: str, file_size: Optional[int] = None
+        self,
+        source_url: str,
+        target_path: str,
+        filename: str,
+        file_size: Optional[int] = None,
     ) -> bool:
         """从 URL 读取文件并流式 PUT 到 OpenList，OpenList 不会收到源 URL。"""
         parsed_source = urlparse(source_url)
         source_host = parsed_source.hostname or "unknown"
-        source_port = parsed_source.port or (443 if parsed_source.scheme == "https" else 80)
+        source_port = parsed_source.port or (
+            443 if parsed_source.scheme == "https" else 80
+        )
 
         try:
-            if self.transfer_config["debug_transfer_logging"] and source_host != "unknown":
+            if (
+                self.transfer_config["debug_transfer_logging"]
+                and source_host != "unknown"
+            ):
                 try:
                     addrinfo = await asyncio.get_running_loop().getaddrinfo(
                         source_host, source_port, type=socket.SOCK_STREAM
                     )
-                    resolved = sorted({f"{item[4][0]}:{item[4][1]}" for item in addrinfo})
-                    logger.debug(f"上游文件目标解析: {source_host}:{source_port} -> {', '.join(resolved)}")
+                    resolved = sorted(
+                        {f"{item[4][0]}:{item[4][1]}" for item in addrinfo}
+                    )
+                    logger.debug(
+                        f"上游文件目标解析: {source_host}:{source_port} -> {', '.join(resolved)}"
+                    )
                 except Exception as e:
-                    logger.debug(f"解析上游文件目标失败: {source_host}:{source_port}, err={e}")
+                    logger.debug(
+                        f"解析上游文件目标失败: {source_host}:{source_port}, err={e}"
+                    )
 
             timeout = aiohttp.ClientTimeout(
                 total=None,
@@ -513,7 +611,9 @@ class OpenlistClient:
                         logger.warning(f"上游 Content-Length 无效: {content_length}")
 
                 payload = ProgressStreamPayload(
-                    source_response.content.iter_chunked(self.transfer_config["upload_chunk_size"]),
+                    source_response.content.iter_chunked(
+                        self.transfer_config["upload_chunk_size"]
+                    ),
                     filename,
                     file_size,
                     self.transfer_config["upload_progress_step"],
@@ -535,7 +635,11 @@ class OpenlistClient:
             return False
 
     async def _put_payload(
-        self, payload: aiohttp.Payload, target_path: str, filename: str, source_desc: str = ""
+        self,
+        payload: aiohttp.Payload,
+        target_path: str,
+        filename: str,
+        source_desc: str = "",
     ) -> bool:
         """将任意 aiohttp payload PUT 到 OpenList。"""
         upload_url = f"{self.base_url}/api/fs/put"
@@ -568,7 +672,9 @@ class OpenlistClient:
                     host, port, type=socket.SOCK_STREAM
                 )
                 resolved = sorted({f"{item[4][0]}:{item[4][1]}" for item in addrinfo})
-                logger.debug(f"OpenList 上传目标解析: {host}:{port} -> {', '.join(resolved)}")
+                logger.debug(
+                    f"OpenList 上传目标解析: {host}:{port} -> {', '.join(resolved)}"
+                )
             except Exception as e:
                 logger.debug(f"解析 OpenList 上传目标失败: {host}:{port}, err={e}")
 
@@ -626,11 +732,15 @@ class OpenlistClient:
                         # 405 可能表示目录已存在，通常也视为成功
                         if result.get("code") == 405:
                             return True
-                        logger.error(f"创建目录失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        logger.error(
+                            f"创建目录失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}"
+                        )
                         return False
                 else:
                     error_text = await resp.text()
-                    logger.error(f"创建目录失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    logger.error(
+                        f"创建目录失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}"
+                    )
                     return False
         except Exception as e:
             logger.error(f"创建目录失败: {e}, 路径: {path}", exc_info=True)
@@ -658,10 +768,7 @@ class OpenlistClient:
             if self.token:
                 headers["Authorization"] = self.token
 
-            remove_data = {
-                "dir": dir_path,
-                "names": names
-            }
+            remove_data = {"dir": dir_path, "names": names}
 
             async with self.session.post(
                 f"{self.base_url}/api/fs/remove", json=remove_data, headers=headers
@@ -671,41 +778,52 @@ class OpenlistClient:
                     if result.get("code") == 200:
                         return True
                     else:
-                        logger.error(f"删除失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 目录: {dir_path}, 文件: {names}")
+                        logger.error(
+                            f"删除失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 目录: {dir_path}, 文件: {names}"
+                        )
                         return False
                 else:
                     error_text = await resp.text()
-                    logger.error(f"删除失败 - HTTP状态: {resp.status}, 响应: {error_text}, 目录: {dir_path}, 文件: {names}")
+                    logger.error(
+                        f"删除失败 - HTTP状态: {resp.status}, 响应: {error_text}, 目录: {dir_path}, 文件: {names}"
+                    )
                     return False
         except Exception as e:
-            logger.error(f"删除失败: {e}, 目录: {dir_path}, 文件: {names}", exc_info=True)
+            logger.error(
+                f"删除失败: {e}, 目录: {dir_path}, 文件: {names}", exc_info=True
+            )
             return False
 
-    async def list_archive_contents(self, path: str, archive_path: str = "/") -> Optional[Dict]:
+    async def list_archive_contents(
+        self, path: str, archive_path: str = "/"
+    ) -> Optional[Dict]:
         """获取压缩包内的文件列表"""
         try:
             headers = {}
             if self.token:
                 headers["Authorization"] = self.token
 
-            archive_data = {
-                "path": path,
-                "archive_path": archive_path
-            }
+            archive_data = {"path": path, "archive_path": archive_path}
 
             async with self.session.post(
-                f"{self.base_url}/api/fs/archive/list", json=archive_data, headers=headers
+                f"{self.base_url}/api/fs/archive/list",
+                json=archive_data,
+                headers=headers,
             ) as resp:
                 if resp.status == 200:
                     result = await resp.json()
                     if result.get("code") == 200:
                         return result.get("data")
                     else:
-                        logger.error(f"获取压缩包列表失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}")
+                        logger.error(
+                            f"获取压缩包列表失败 - code: {result.get('code')}, message: {result.get('message', '未知错误')}, 路径: {path}"
+                        )
                         return None
                 else:
                     error_text = await resp.text()
-                    logger.error(f"获取压缩包列表失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}")
+                    logger.error(
+                        f"获取压缩包列表失败 - HTTP状态: {resp.status}, 响应: {error_text}, 路径: {path}"
+                    )
                     return None
         except Exception as e:
             logger.error(f"获取压缩包列表失败: {e}, 路径: {path}", exc_info=True)

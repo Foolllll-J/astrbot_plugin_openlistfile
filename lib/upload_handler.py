@@ -9,7 +9,9 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import File, Image, Video, Plain
 
 
-async def upload_file(plugin, event: AstrMessageEvent, file_component: File, user_config: Dict):
+async def upload_file(
+    plugin, event: AstrMessageEvent, file_component: File, user_config: Dict
+):
     user_id = event.get_sender_id()
     upload_state_key = plugin._get_upload_state_key(event)
     upload_state = plugin._get_user_upload_state(upload_state_key)
@@ -24,7 +26,9 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
     component_url = getattr(file_component, "url", None)
     component_file = getattr(file_component, "file_", None)
     raw_event_data = event.message_obj.raw_message
-    message_list = raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
+    message_list = (
+        raw_event_data.get("message") if isinstance(raw_event_data, dict) else None
+    )
     if isinstance(message_list, list):
         for segment_dict in message_list:
             if isinstance(segment_dict, dict) and segment_dict.get("type") == "file":
@@ -40,7 +44,9 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
     file_name = file_name or component_name
     if not file_name:
         yield event.plain_result("出现异常，请稍后尝试上传")
-        logger.warning(f"用户 {user_id} 上传文件失败：无法从原始消息中解析出有效的文件名。")
+        logger.warning(
+            f"用户 {user_id} 上传文件失败：无法从原始消息中解析出有效的文件名。"
+        )
         return
     if not plugin._is_extension_allowed(file_name, user_config):
         yield event.plain_result(
@@ -50,13 +56,17 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
         return
 
     raw_file_size_int = None
-    debug_transfer_logging = plugin._get_bool_config(user_config, "debug_transfer_logging", False)
+    debug_transfer_logging = plugin._get_bool_config(
+        user_config, "debug_transfer_logging", False
+    )
     if raw_file_size not in (None, ""):
         try:
             raw_file_size_int = int(raw_file_size)
         except (TypeError, ValueError):
             if debug_transfer_logging:
-                logger.debug(f"用户 {user_id} 上传文件大小解析失败: name={file_name}, raw_size={raw_file_size}")
+                logger.debug(
+                    f"用户 {user_id} 上传文件大小解析失败: name={file_name}, raw_size={raw_file_size}"
+                )
 
     try:
         logger.debug(
@@ -65,11 +75,19 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
             f"component_name={component_name}, component_has_url={bool(component_url)}, "
             f"component_file={component_file}"
         )
-        max_upload_size_mb = plugin._get_size_limit_mb(user_config, "max_upload_size", 100)
+        max_upload_size_mb = plugin._get_size_limit_mb(
+            user_config, "max_upload_size", 100
+        )
         max_upload_size = max_upload_size_mb * 1024 * 1024
-        if max_upload_size_mb > 0 and raw_file_size_int is not None and raw_file_size_int > max_upload_size:
+        if (
+            max_upload_size_mb > 0
+            and raw_file_size_int is not None
+            and raw_file_size_int > max_upload_size
+        ):
             size_mb = raw_file_size_int / (1024 * 1024)
-            yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
+            yield event.plain_result(
+                f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB"
+            )
             return
 
         upload_url = raw_file_url or component_url
@@ -109,10 +127,14 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
                 if success:
                     upload_state = plugin._get_user_upload_state(upload_state_key)
                     upload_state.setdefault("uploaded_files", []).append(file_name)
-                    yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
+                    yield event.plain_result(
+                        f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}"
+                    )
                     plugin.cache_manager.clear_cache(user_id)
                 else:
-                    yield event.plain_result("❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+                    yield event.plain_result(
+                        "❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+                    )
             return
 
         if upload_url and raw_file_size_int is None and max_upload_size_mb > 0:
@@ -147,7 +169,9 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
             )
             if max_upload_size_mb > 0 and file_size > max_upload_size:
                 size_mb = file_size / (1024 * 1024)
-                yield event.plain_result(f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
+                yield event.plain_result(
+                    f"❌ 文件过大: {size_mb:.1f}MB > {max_upload_size_mb}MB"
+                )
                 return
 
             yield event.plain_result(
@@ -160,24 +184,34 @@ async def upload_file(plugin, event: AstrMessageEvent, file_component: File, use
                 f"target={target_path}, openlist_url={user_config.get('openlist_url')}"
             )
             async with plugin._create_openlist_client(user_config) as client:
-                success = await plugin._upload_file_with_retry(client, file_path, target_path, file_name, user_config)
+                success = await plugin._upload_file_with_retry(
+                    client, file_path, target_path, file_name, user_config
+                )
                 if success:
                     upload_state = plugin._get_user_upload_state(upload_state_key)
                     upload_state.setdefault("uploaded_files", []).append(file_name)
-                    yield event.plain_result(f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}")
+                    yield event.plain_result(
+                        f"✅ 上传成功!\n📄 文件: {file_name}\n📂 路径: {target_path}"
+                    )
                     plugin.cache_manager.clear_cache(user_id)
                 else:
-                    yield event.plain_result("❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+                    yield event.plain_result(
+                        "❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+                    )
         finally:
             if file_path_obj and file_path_obj.exists():
                 file_path_obj.unlink()
     except Exception as e:
         logger.error(f"用户 {user_id} 上传文件失败: {e}", exc_info=True)
-        yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        yield event.plain_result(
+            f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
         plugin._set_user_upload_waiting(upload_state_key, False)
 
 
-async def upload_image(plugin, event: AstrMessageEvent, image_component: Image, user_config: Dict):
+async def upload_image(
+    plugin, event: AstrMessageEvent, image_component: Image, user_config: Dict
+):
     """上传图片到 Openlist"""
     user_id = event.get_sender_id()
     upload_state_key = plugin._get_upload_state_key(event)
@@ -191,7 +225,14 @@ async def upload_image(plugin, event: AstrMessageEvent, image_component: Image, 
             return
 
         try:
-            if image_path_obj.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            if image_path_obj.suffix.lower() in (
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".bmp",
+            ):
                 ext = image_path_obj.suffix
             else:
                 ext = ".jpg"
@@ -203,11 +244,15 @@ async def upload_image(plugin, event: AstrMessageEvent, image_component: Image, 
                 )
                 return
             file_size = image_path_obj.stat().st_size
-            max_upload_size_mb = plugin._get_size_limit_mb(user_config, "max_upload_size", 100)
+            max_upload_size_mb = plugin._get_size_limit_mb(
+                user_config, "max_upload_size", 100
+            )
             max_upload_size = max_upload_size_mb * 1024 * 1024
             if max_upload_size_mb > 0 and file_size > max_upload_size:
                 size_mb = file_size / (1024 * 1024)
-                yield event.plain_result(f"❌ 图片过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
+                yield event.plain_result(
+                    f"❌ 图片过大: {size_mb:.1f}MB > {max_upload_size_mb}MB"
+                )
                 return
             yield event.plain_result(
                 f"📤 开始上传图片: {filename}\n"
@@ -215,24 +260,34 @@ async def upload_image(plugin, event: AstrMessageEvent, image_component: Image, 
                 f"📂 目标: {target_path}"
             )
             async with plugin._create_openlist_client(user_config) as client:
-                success = await plugin._upload_file_with_retry(client, image_path, target_path, filename, user_config)
+                success = await plugin._upload_file_with_retry(
+                    client, image_path, target_path, filename, user_config
+                )
                 if success:
                     upload_state = plugin._get_user_upload_state(upload_state_key)
                     upload_state.setdefault("uploaded_files", []).append(filename)
-                    yield event.plain_result(f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
+                    yield event.plain_result(
+                        f"✅ 图片上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}"
+                    )
                     plugin.cache_manager.clear_cache(user_id)
                 else:
-                    yield event.plain_result("❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+                    yield event.plain_result(
+                        "❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+                    )
         finally:
             if image_path_obj and image_path_obj.exists():
                 image_path_obj.unlink()
     except Exception as e:
         logger.error(f"用户 {user_id} 上传图片失败: {e}", exc_info=True)
-        yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        yield event.plain_result(
+            f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
         plugin._set_user_upload_waiting(upload_state_key, False)
 
 
-async def upload_video(plugin, event: AstrMessageEvent, video_component: Video, user_config: Dict):
+async def upload_video(
+    plugin, event: AstrMessageEvent, video_component: Video, user_config: Dict
+):
     """上传视频到 Openlist"""
     user_id = event.get_sender_id()
     upload_state_key = plugin._get_upload_state_key(event)
@@ -255,11 +310,15 @@ async def upload_video(plugin, event: AstrMessageEvent, video_component: Video, 
                 )
                 return
             file_size = video_path_obj.stat().st_size
-            max_upload_size_mb = plugin._get_size_limit_mb(user_config, "max_upload_size", 100)
+            max_upload_size_mb = plugin._get_size_limit_mb(
+                user_config, "max_upload_size", 100
+            )
             max_upload_size = max_upload_size_mb * 1024 * 1024
             if max_upload_size_mb > 0 and file_size > max_upload_size:
                 size_mb = file_size / (1024 * 1024)
-                yield event.plain_result(f"❌ 视频过大: {size_mb:.1f}MB > {max_upload_size_mb}MB")
+                yield event.plain_result(
+                    f"❌ 视频过大: {size_mb:.1f}MB > {max_upload_size_mb}MB"
+                )
                 return
             yield event.plain_result(
                 f"📤 开始上传视频: {filename}\n"
@@ -267,20 +326,28 @@ async def upload_video(plugin, event: AstrMessageEvent, video_component: Video, 
                 f"📂 目标: {target_path}"
             )
             async with plugin._create_openlist_client(user_config) as client:
-                success = await plugin._upload_file_with_retry(client, video_path, target_path, filename, user_config)
+                success = await plugin._upload_file_with_retry(
+                    client, video_path, target_path, filename, user_config
+                )
                 if success:
                     upload_state = plugin._get_user_upload_state(upload_state_key)
                     upload_state.setdefault("uploaded_files", []).append(filename)
-                    yield event.plain_result(f"✅ 视频上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}")
+                    yield event.plain_result(
+                        f"✅ 视频上传成功!\n📄 文件: {filename}\n📂 路径: {target_path}"
+                    )
                     plugin.cache_manager.clear_cache(user_id)
                 else:
-                    yield event.plain_result("❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+                    yield event.plain_result(
+                        "❌ 上传失败，请检查网络连接和权限\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+                    )
         finally:
             if video_path_obj and video_path_obj.exists():
                 video_path_obj.unlink()
     except Exception as e:
         logger.error(f"用户 {user_id} 上传视频失败: {e}", exc_info=True)
-        yield event.plain_result(f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        yield event.plain_result(
+            f"❌ 上传失败: {str(e)}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
         plugin._set_user_upload_waiting(upload_state_key, False)
 
 
@@ -306,14 +373,18 @@ async def handle_upload_command(plugin, event: AstrMessageEvent, target: str = "
 
     user_config = plugin.get_user_config(user_id)
     if not plugin._validate_config(user_config):
-        yield event.plain_result("❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导")
+        yield event.plain_result(
+            "❌ 请先配置Openlist连接信息\n💡 使用 /ol config setup 开始配置向导"
+        )
         return
 
     if target.isdigit():
         number = int(target)
         item = plugin._get_item_by_number(user_id, number)
         if not item:
-            yield event.plain_result(f"❌ 序号 {number} 无效，请先执行 /ol ls 或使用路径指定上传目录")
+            yield event.plain_result(
+                f"❌ 序号 {number} 无效，请先执行 /ol ls 或使用路径指定上传目录"
+            )
             return
         if not item.get("is_dir", False):
             yield event.plain_result(f"❌ 序号 {number} 不是目录，无法作为上传目标")
@@ -335,7 +406,9 @@ async def handle_upload_command(plugin, event: AstrMessageEvent, target: str = "
                     return
         except Exception as e:
             logger.error(f"用户 {user_id} 检查上传目标目录失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 无法访问上传目标目录: {target_path}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+            yield event.plain_result(
+                f"❌ 无法访问上传目标目录: {target_path}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+            )
             return
 
         plugin._set_user_upload_waiting(upload_state_key, False, target_path)
@@ -361,21 +434,25 @@ async def handle_upload_command(plugin, event: AstrMessageEvent, target: str = "
                 yield event.plain_result(f"❌ 无法访问上传目标目录: {target_path}")
                 return
     except Exception as e:
-        logger.error(f"用户 {user_id} 检查上传目标目录失败: {e}, 路径: {target_path}", exc_info=True)
-        yield event.plain_result(f"❌ 无法访问上传目标目录: {target_path}\n💡 提示: 管理员可在后台日志中查看详细错误信息")
+        logger.error(
+            f"用户 {user_id} 检查上传目标目录失败: {e}, 路径: {target_path}",
+            exc_info=True,
+        )
+        yield event.plain_result(
+            f"❌ 无法访问上传目标目录: {target_path}\n💡 提示: 管理员可在后台日志中查看详细错误信息"
+        )
         return
 
     upload_timeout_minutes = plugin._get_upload_mode_timeout_minutes(user_config)
     plugin._set_user_upload_waiting(upload_state_key, True, target_path)
-    upload_text = f"""📤 上传模式已启动
-
-📂 目标目录: {target_path}
-
-💡 请直接发送图片、视频或文件，系统会自动上传到此目录
-⏰ 上传模式将在{upload_timeout_minutes}分钟后自动取消
-
-• /ol ul 路径 - 切换上传目标目录
-• /ol ul cancel - 取消上传模式"""
+    upload_text = (
+        f"📤 上传模式已启动\n\u200b\n"
+        f"📂 目标目录: {target_path}\n\u200b\n"
+        f"💡 请直接发送图片、视频或文件，系统会自动上传到此目录\n"
+        f"⏰ 上传模式将在{upload_timeout_minutes}分钟后自动取消\n\u200b\n"
+        f"• /ol ul 路径 - 切换上传目标目录\n"
+        f"• /ol ul cancel - 取消上传模式"
+    )
     yield event.plain_result(upload_text)
 
     async def auto_cancel_upload():
@@ -389,7 +466,9 @@ async def handle_upload_command(plugin, event: AstrMessageEvent, target: str = "
                     summary += f"• {f}\n"
                 await event.send(MessageChain([Plain(text=summary)]))
             plugin._set_user_upload_waiting(upload_state_key, False)
-            logger.info(f"用户 {user_id} 在会话 {upload_state_key} 的上传模式已自动取消（超时{upload_timeout_minutes}分钟）")
+            logger.info(
+                f"用户 {user_id} 在会话 {upload_state_key} 的上传模式已自动取消（超时{upload_timeout_minutes}分钟）"
+            )
 
     asyncio.create_task(auto_cancel_upload())
 
@@ -397,9 +476,6 @@ async def handle_upload_command(plugin, event: AstrMessageEvent, target: str = "
 async def handle_file_message(plugin, event: AstrMessageEvent):
     """处理文件消息"""
     if not isinstance(event, AstrMessageEvent):
-        return
-
-    if not plugin._is_regular_message_event(event):
         return
 
     messages = event.get_messages()
@@ -421,10 +497,14 @@ async def handle_file_message(plugin, event: AstrMessageEvent):
 
     for file_component in file_components:
         if isinstance(file_component, Image):
-            async for result in upload_image(plugin, event, file_component, user_config):
+            async for result in upload_image(
+                plugin, event, file_component, user_config
+            ):
                 yield result
         elif isinstance(file_component, Video):
-            async for result in upload_video(plugin, event, file_component, user_config):
+            async for result in upload_video(
+                plugin, event, file_component, user_config
+            ):
                 yield result
         else:
             async for result in upload_file(plugin, event, file_component, user_config):
